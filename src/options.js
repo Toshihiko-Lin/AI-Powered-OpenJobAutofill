@@ -500,7 +500,7 @@ fields.baseUrl.addEventListener("change", () => maybeAutoRefreshModelList());
 fields.customUrl.addEventListener("change", () => maybeAutoRefreshModelList());
 registerApiDirtyTracking();
 fields.profileFileInput.addEventListener("change", importProfileFromFile);
-fields.parseResumeButton?.addEventListener("click", () => fields.resumeFileInput?.click());
+fields.parseResumeButton?.addEventListener("click", beginResumeParse);
 fields.resumeFileInput?.addEventListener("change", parseResumeFromFile);
 fields.profileSectionEditor.addEventListener("input", handleProfileEditorInput);
 fields.profileSectionEditor.addEventListener("focusin", handleProfileSectionFocus);
@@ -757,6 +757,36 @@ async function importProfileFromFile() {
   }
 }
 
+async function beginResumeParse() {
+  const apiConfig = collectApiConfig();
+  if (!hasUsableApiConfig(apiConfig)) {
+    setResumeParseFeedback("请先在下方 API 设置中填写 Base URL 和模型名（或自定义接口地址），简历解析需要调用 AI 接口。", "error");
+    return;
+  }
+
+  // Firefox only allows permissions.request() synchronously inside a user input handler,
+  // so the host permission is requested here, before any await and before the file picker opens.
+  let granted = false;
+  const startedAt = Date.now();
+  try {
+    granted = await ensureApiHostPermissions(apiConfig, { prompt: true });
+  } catch (error) {
+    setResumeParseFeedback(`申请 API 域名访问权限失败：${error.message}`, "error");
+    return;
+  }
+  if (!granted) {
+    setResumeParseFeedback("未授权 API 域名访问权限，无法解析简历。", "error");
+    return;
+  }
+
+  setResumeParseFeedback("");
+  fields.resumeFileInput?.click();
+  if (Date.now() - startedAt > 400) {
+    // A permission prompt was most likely shown; some browsers drop the user gesture afterwards.
+    setResumeParseFeedback("已授权 API 域名访问。如果没有弹出文件选择框，请再点一次按钮。");
+  }
+}
+
 async function parseResumeFromFile() {
   const file = fields.resumeFileInput.files?.[0];
   if (!file) {
@@ -772,6 +802,12 @@ async function parseResumeFromFile() {
     const apiConfig = collectApiConfig();
     if (!hasUsableApiConfig(apiConfig)) {
       throw new Error("请先在下方 API 设置中填写 Base URL 和模型名（或自定义接口地址），简历解析需要调用 AI 接口。");
+    }
+
+    // The host permission was requested in the button click handler; here we only verify it.
+    const hasApiPermission = await ensureApiHostPermissions(apiConfig, { prompt: false });
+    if (!hasApiPermission) {
+      throw new Error("未授权 API 域名访问权限。请重新点击“上传简历自动解析”，并在浏览器提示中允许访问。");
     }
 
     setResumeParseFeedback(`正在本机提取《${file.name}》的文本...`, "busy");
@@ -806,11 +842,6 @@ async function parseResumeFromFile() {
     if (!confirmed) {
       setResumeParseFeedback("已取消，简历内容没有发送。");
       return;
-    }
-
-    const hasApiPermission = await ensureApiHostPermissions(apiConfig, { prompt: true });
-    if (!hasApiPermission) {
-      throw new Error("未授权 API 域名访问权限，无法解析简历。");
     }
 
     setResumeParseFeedback("正在调用 AI 解析简历，通常需要十几秒到一分钟...", "busy");
