@@ -25,7 +25,11 @@ OpenJobAutofill 是一个带 AI 页面分析能力的网申表单填写扩展。
 
 ## 安装
 
-当前版本适合以开发者模式安装到 Brave 或 Chrome。
+当前版本支持以开发者模式安装到 Brave、Chrome 或 Firefox（140 及以上）。
+
+本项目不需要安装依赖，也不需要构建，加载项目目录即可使用。
+
+### Brave / Chrome
 
 1. 下载或克隆本项目到本机。
 2. 打开 `brave://extensions/` 或 `chrome://extensions/`。
@@ -34,7 +38,19 @@ OpenJobAutofill 是一个带 AI 页面分析能力的网申表单填写扩展。
 5. 选择项目目录 `OpenJobAutofill`。
 6. 固定扩展图标，方便在招聘页面使用。
 
-本项目不需要安装依赖，也不需要构建，加载项目目录即可使用。
+### Firefox
+
+1. 下载或克隆本项目到本机。
+2. 打开 `about:debugging#/runtime/this-firefox`。
+3. 点击 `临时载入附加组件…`（Load Temporary Add-on…）。
+4. 选择项目目录中的 `manifest.json`。
+5. 在工具栏扩展菜单中固定 OpenJobAutofill 图标。
+
+Firefox 注意事项：
+
+- 临时载入的扩展在关闭 Firefox 后会被移除，重启后需要重新载入；已保存的简历资料仍保留在扩展存储中。
+- Firefox 不会自动授予 `api.github.com` 访问权限，如需检查更新，请在 `about:addons` → OpenJobAutofill → `权限` 中开启对应站点权限。
+- 配置 AI 接口时，Firefox 会弹出站点访问授权提示，确认后才能调用接口。
 
 ## 第一次使用
 

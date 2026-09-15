@@ -25,7 +25,11 @@ If this project saves you time, a GitHub Star would be appreciated. Issues and f
 
 ## Installation
 
-The current version is intended to be installed in Brave or Chrome through developer mode.
+The current version can be installed in Brave, Chrome, or Firefox (140+) through developer mode.
+
+No dependency installation or build step is required. Load the project folder directly.
+
+### Brave / Chrome
 
 1. Download or clone this repository to your computer.
 2. Open `brave://extensions/` or `chrome://extensions/`.
@@ -34,7 +38,19 @@ The current version is intended to be installed in Brave or Chrome through devel
 5. Select the `OpenJobAutofill` project folder.
 6. Pin the extension icon for easier access on job application pages.
 
-No dependency installation or build step is required. Load the project folder directly.
+### Firefox
+
+1. Download or clone this repository to your computer.
+2. Open `about:debugging#/runtime/this-firefox`.
+3. Click `Load Temporary Add-on…`.
+4. Select `manifest.json` inside the project folder.
+5. Pin the OpenJobAutofill icon from the toolbar extensions menu.
+
+Firefox notes:
+
+- Temporary add-ons are removed when Firefox closes and must be reloaded after a restart; your saved profile stays in extension storage.
+- Firefox does not grant `api.github.com` access automatically. To enable update checks, open `about:addons` → OpenJobAutofill → `Permissions` and turn on the site permission.
+- When configuring an AI endpoint, Firefox shows a site-access prompt; the API can be called only after you accept it.
 
 ## First Use
 
