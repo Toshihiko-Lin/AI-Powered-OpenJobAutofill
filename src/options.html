@@ -55,6 +55,20 @@
               <p class="hint">这里按通用网申栏目拆开填写。保存后资料只保存在本机浏览器里，需要迁移或备份时再导出资料备份。</p>
             </div>
           </div>
+          <div class="resume-parse" aria-label="上传简历自动解析">
+            <div>
+              <div class="resume-parse-title">上传简历自动解析（可选）</div>
+              <p class="hint">支持 PDF、DOCX、TXT、MD。文本在本机提取后，会把简历全文发送到下方配置的 API，由模型拆分到各模块字段。这是唯一会把简历具体内容发给 AI 的功能，点击后会再次确认。解析结果只写入编辑区，检查无误后再点“保存资料”。</p>
+            </div>
+            <div class="resume-parse-controls">
+              <button id="parseResume" class="secondary" type="button">上传简历自动解析</button>
+              <label class="checkline">
+                <input id="resumeParseOverwrite" type="checkbox" />
+                <span>覆盖已有值（不勾选时只填写空字段，已有内容的经历模块不改动）</span>
+              </label>
+            </div>
+            <p id="resumeParseFeedback" class="resume-parse-feedback" aria-live="polite"></p>
+          </div>
           <div id="profileSectionEditor" class="profile-section-editor"></div>
           <div class="actions profile-actions">
             <button id="saveProfile" type="button">保存资料</button>
@@ -65,6 +79,7 @@
           </div>
           <p id="profileFeedback" class="profile-feedback" aria-live="polite">资料加载后，编辑任意字段会在这里提示是否需要保存。</p>
           <input id="profileFileInput" type="file" accept="application/json,.json" hidden />
+          <input id="resumeFileInput" type="file" accept=".pdf,.docx,.txt,.md,application/pdf" hidden />
         </section>
 
         <aside class="resume-tips card">
