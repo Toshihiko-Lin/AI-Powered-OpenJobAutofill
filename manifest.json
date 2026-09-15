@@ -4,6 +4,17 @@
   "version": "1.0.2",
   "description": "Local resume profile helper with privacy-first AI page analysis and one-click form filling.",
   "homepage_url": "https://github.com/Br1an67/OpenJobAutofill",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "openjobautofill@br1an67.github.io",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent"
+        ]
+      }
+    }
+  },
   "permissions": [
     "activeTab",
     "alarms",
@@ -25,6 +36,9 @@
   ],
   "background": {
     "service_worker": "src/background.js",
+    "scripts": [
+      "src/background.js"
+    ],
     "type": "module"
   },
   "action": {
