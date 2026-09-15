@@ -426,6 +426,62 @@ h2 {
   font-weight: 700;
 }
 
+.resume-parse {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 18px;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: rgba(255, 250, 240, 0.6);
+}
+
+.resume-parse-title {
+  font-weight: 700;
+}
+
+.resume-parse .hint {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.resume-parse-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.resume-parse-controls .checkline {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.resume-parse-feedback {
+  min-height: 1.2em;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.resume-parse-feedback:empty {
+  display: none;
+}
+
+.resume-parse-feedback.is-busy {
+  color: var(--amber);
+}
+
+.resume-parse-feedback.is-saved {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.resume-parse-feedback.error {
+  color: var(--red);
+  font-weight: 700;
+}
+
 .profile-tips {
   display: grid;
   gap: 12px;

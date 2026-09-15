@@ -19,6 +19,10 @@ const fields = {
   profileNav: document.getElementById("profileNav"),
   profileTips: document.getElementById("profileTips"),
   profileFileInput: document.getElementById("profileFileInput"),
+  parseResumeButton: document.getElementById("parseResume"),
+  resumeFileInput: document.getElementById("resumeFileInput"),
+  resumeParseOverwrite: document.getElementById("resumeParseOverwrite"),
+  resumeParseFeedback: document.getElementById("resumeParseFeedback"),
   profileFeedback: document.getElementById("profileFeedback"),
   apiFeedback: document.getElementById("apiFeedback"),
   apiPreviewBox: document.getElementById("apiPreviewBox"),
@@ -35,6 +39,11 @@ const PROFILE_BACKUP_FORMAT = "OpenJobAutofillProfileBackup";
 const SAVE_API_LABEL = fields.saveApiButton?.textContent || "保存 API 设置";
 const SAVE_PROFILE_LABEL = fields.saveProfileButton?.textContent || "保存资料";
 const CHECK_UPDATE_LABEL = fields.checkUpdateButton?.textContent || "检查更新";
+const PARSE_RESUME_LABEL = fields.parseResumeButton?.textContent || "上传简历自动解析";
+const RESUME_FILE_MAX_BYTES = 15 * 1024 * 1024;
+const RESUME_TEXT_MAX_CHARS = 20000;
+const PDFJS_MODULE_PATH = "./vendor/pdf.min.mjs";
+const PDFJS_WORKER_PATH = "src/vendor/pdf.worker.min.mjs";
 const API_CONFIG_FIELD_KEYS = [
   "apiMode",
   "apiKey",
@@ -491,6 +500,8 @@ fields.baseUrl.addEventListener("change", () => maybeAutoRefreshModelList());
 fields.customUrl.addEventListener("change", () => maybeAutoRefreshModelList());
 registerApiDirtyTracking();
 fields.profileFileInput.addEventListener("change", importProfileFromFile);
+fields.parseResumeButton?.addEventListener("click", () => fields.resumeFileInput?.click());
+fields.resumeFileInput?.addEventListener("change", parseResumeFromFile);
 fields.profileSectionEditor.addEventListener("input", handleProfileEditorInput);
 fields.profileSectionEditor.addEventListener("focusin", handleProfileSectionFocus);
 fields.profileSectionEditor.addEventListener("click", handleStructuredProfileClick);
@@ -744,6 +755,394 @@ async function importProfileFromFile() {
   } finally {
     fields.profileFileInput.value = "";
   }
+}
+
+async function parseResumeFromFile() {
+  const file = fields.resumeFileInput.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  try {
+    setResumeParseBusy(true);
+    if (file.size > RESUME_FILE_MAX_BYTES) {
+      throw new Error("文件超过 15MB，请压缩或另存为文本后再试。");
+    }
+
+    const apiConfig = collectApiConfig();
+    if (!hasUsableApiConfig(apiConfig)) {
+      throw new Error("请先在下方 API 设置中填写 Base URL 和模型名（或自定义接口地址），简历解析需要调用 AI 接口。");
+    }
+
+    setResumeParseFeedback(`正在本机提取《${file.name}》的文本...`, "busy");
+    const extracted = await extractResumeText(file);
+    const resumeText = extracted.text;
+    if (!resumeText) {
+      throw new Error(
+        extracted.kind === "pdf"
+          ? "没有从 PDF 中提取到文字。扫描件或纯图片 PDF 无法解析，请改用 DOCX 或文本文件。"
+          : "没有从文件中提取到文字。"
+      );
+    }
+
+    const truncated = resumeText.length > RESUME_TEXT_MAX_CHARS;
+    const sendText = truncated ? resumeText.slice(0, RESUME_TEXT_MAX_CHARS) : resumeText;
+    const confirmed = window.confirm(
+      [
+        `即将把《${file.name}》的简历全文（约 ${sendText.length} 字${truncated ? `，已截断到前 ${RESUME_TEXT_MAX_CHARS} 字` : ""}）发送到：`,
+        describeApiTarget(apiConfig),
+        "",
+        "这是本插件唯一会把简历具体内容发给 AI 的功能，姓名、电话、经历等都会离开本机。",
+        apiHasUnsavedChanges ? "当前使用的是尚未保存的 API 表单值。" : "",
+        fields.resumeParseOverwrite?.checked
+          ? "解析结果会覆盖编辑区中已有的值。"
+          : "解析结果只填写空字段，已有内容的经历模块不改动。",
+        "",
+        "是否继续？"
+      ]
+        .filter((line) => line !== "")
+        .join("\n")
+    );
+    if (!confirmed) {
+      setResumeParseFeedback("已取消，简历内容没有发送。");
+      return;
+    }
+
+    const hasApiPermission = await ensureApiHostPermissions(apiConfig, { prompt: true });
+    if (!hasApiPermission) {
+      throw new Error("未授权 API 域名访问权限，无法解析简历。");
+    }
+
+    setResumeParseFeedback("正在调用 AI 解析简历，通常需要十几秒到一分钟...", "busy");
+    setStatus("正在调用 AI 解析简历...");
+    const result = await sendRuntimeMessage({
+      type: "OJAF_PARSE_RESUME",
+      payload: {
+        apiConfig,
+        resumeText: sendText,
+        catalog: buildResumeSectionCatalog()
+      }
+    });
+
+    const current = collectProfileV2FromEditor();
+    const merge = mergeParsedResumeIntoProfile(current, result.profileV2, Boolean(fields.resumeParseOverwrite?.checked));
+    if (merge.filledFields === 0 && merge.filledItems === 0) {
+      setResumeParseFeedback(
+        merge.skippedSections.length > 0
+          ? `AI 返回了内容，但对应模块已有资料，未改动：${merge.skippedSections.join("、")}。勾选“覆盖已有值”可替换。`
+          : "AI 没有返回可用的字段内容，请检查简历文本或换个模型再试。",
+        "error"
+      );
+      return;
+    }
+
+    renderProfileSectionEditor(merge.profileV2);
+    const summary = [
+      `已写入 ${merge.filledFields} 个字段`,
+      merge.filledItems > 0 ? `${merge.filledItems} 条经历` : "",
+      merge.skippedSections.length > 0 ? `未改动已有模块：${merge.skippedSections.join("、")}` : "",
+      result.truncated ? "简历过长已截断" : ""
+    ]
+      .filter(Boolean)
+      .join("；");
+    setResumeParseFeedback(`${summary}。请逐项检查，确认后点击“保存资料”。`, "saved");
+    setProfileDirty("简历解析结果已写入编辑区，检查后记得点击保存资料。");
+    setStatus(`简历解析完成：${summary}。${result.notes?.length ? `\nAI 备注：${result.notes.join("；")}` : ""}`);
+    showToast("简历解析完成，请检查后保存。");
+    setActiveProfileSection(merge.firstSectionKey || RESUME_SECTION_GUIDE[0]?.key, { force: true });
+  } catch (error) {
+    setResumeParseFeedback(`解析失败：${error.message}`, "error");
+    setStatus(`简历解析失败：${error.message}`, true);
+    showToast(`简历解析失败：${error.message}`, "error");
+  } finally {
+    setResumeParseBusy(false);
+    fields.resumeFileInput.value = "";
+  }
+}
+
+function setResumeParseBusy(isBusy) {
+  if (!fields.parseResumeButton) {
+    return;
+  }
+  fields.parseResumeButton.disabled = isBusy;
+  fields.parseResumeButton.textContent = isBusy ? "解析中..." : PARSE_RESUME_LABEL;
+}
+
+function setResumeParseFeedback(message, state = "") {
+  if (!fields.resumeParseFeedback) {
+    return;
+  }
+  fields.resumeParseFeedback.textContent = message;
+  fields.resumeParseFeedback.classList.toggle("is-busy", state === "busy");
+  fields.resumeParseFeedback.classList.toggle("is-saved", state === "saved");
+  fields.resumeParseFeedback.classList.toggle("error", state === "error");
+}
+
+function hasUsableApiConfig(apiConfig) {
+  if (apiConfig.mode === "custom") {
+    return Boolean(apiConfig.customUrl);
+  }
+  return Boolean(apiConfig.baseUrl && apiConfig.model);
+}
+
+function describeApiTarget(apiConfig) {
+  const url = apiConfig.mode === "custom" ? apiConfig.customUrl : apiConfig.baseUrl;
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch {
+    // keep raw value
+  }
+  return apiConfig.mode === "custom" ? `自定义接口 ${host}` : `${host}，模型 ${apiConfig.model}`;
+}
+
+function buildResumeSectionCatalog() {
+  return STRUCTURED_RESUME_SECTIONS.map((section) => ({
+    key: section.key,
+    title: section.title,
+    kind: section.kind,
+    itemLabel: section.itemLabel || "",
+    fields: section.fields.map((field) => field.label)
+  }));
+}
+
+function mergeParsedResumeIntoProfile(current, parsedProfile, overwrite) {
+  const profileV2 = normalizeProfileV2(current);
+  const parsedSections = isPlainObject(parsedProfile?.sections) ? parsedProfile.sections : {};
+  const stats = { filledFields: 0, filledItems: 0, skippedSections: [], firstSectionKey: "" };
+
+  for (const config of STRUCTURED_RESUME_SECTIONS) {
+    const incoming = parsedSections[config.key];
+    if (!incoming) {
+      continue;
+    }
+    const target = profileV2.sections[config.key];
+
+    if (config.kind === "repeat") {
+      const items = Array.isArray(incoming.items) ? incoming.items.map(normalizeProfileItem).filter(hasStructuredItemData) : [];
+      if (items.length === 0) {
+        continue;
+      }
+      if (target.items.length > 0 && !overwrite) {
+        stats.skippedSections.push(config.title);
+        continue;
+      }
+      target.items = items.map((item, index) => ({
+        ...item,
+        title: item.title || `${config.itemLabel || config.title} ${index + 1}`
+      }));
+      stats.filledItems += items.length;
+      stats.filledFields += items.reduce((sum, item) => sum + Object.keys(item.values).length + item.custom.length, 0);
+      stats.firstSectionKey ||= config.key;
+      continue;
+    }
+
+    const values = normalizeValuesObject(incoming.values);
+    for (const [label, value] of Object.entries(values)) {
+      if (target.values[label] && !overwrite) {
+        continue;
+      }
+      if (target.values[label] !== value) {
+        stats.filledFields += 1;
+      }
+      target.values[label] = value;
+      stats.firstSectionKey ||= config.key;
+    }
+
+    for (const row of normalizeCustomRows(incoming.custom)) {
+      const existing = target.custom.find((item) => item.label === row.label);
+      if (existing) {
+        if (overwrite && existing.value !== row.value) {
+          existing.value = row.value;
+          stats.filledFields += 1;
+        }
+        continue;
+      }
+      target.custom.push(row);
+      stats.filledFields += 1;
+      stats.firstSectionKey ||= config.key;
+    }
+  }
+
+  return { profileV2, ...stats };
+}
+
+async function extractResumeText(file) {
+  const name = String(file.name || "").toLowerCase();
+  const kind = name.endsWith(".pdf") || file.type === "application/pdf"
+    ? "pdf"
+    : name.endsWith(".docx")
+      ? "docx"
+      : name.endsWith(".txt") || name.endsWith(".md") || file.type.startsWith("text/")
+        ? "text"
+        : "";
+
+  if (!kind) {
+    throw new Error("不支持的文件格式。请使用 PDF、DOCX、TXT 或 MD；旧版 .doc 请先另存为 .docx。");
+  }
+
+  let text = "";
+  if (kind === "text") {
+    text = await file.text();
+  } else if (kind === "docx") {
+    text = await extractDocxText(await file.arrayBuffer());
+  } else {
+    text = await extractPdfText(await file.arrayBuffer());
+  }
+
+  return { kind, text: normalizeResumeText(text) };
+}
+
+function normalizeResumeText(text) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+let pdfjsModulePromise = null;
+
+async function extractPdfText(arrayBuffer) {
+  if (!pdfjsModulePromise) {
+    pdfjsModulePromise = import(PDFJS_MODULE_PATH).then((module) => {
+      module.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL(PDFJS_WORKER_PATH);
+      return module;
+    });
+  }
+  const pdfjs = await pdfjsModulePromise;
+  const loadingTask = pdfjs.getDocument({ data: arrayBuffer, isEvalSupported: false });
+
+  try {
+    const pdfDocument = await loadingTask.promise;
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push(joinPdfTextItems(content.items));
+      page.cleanup();
+    }
+    return pages.join("\n\n");
+  } finally {
+    await loadingTask.destroy();
+  }
+}
+
+function joinPdfTextItems(items) {
+  let text = "";
+  let lastY = null;
+  for (const item of items) {
+    if (typeof item.str !== "string") {
+      continue;
+    }
+    const y = Array.isArray(item.transform) ? Math.round(item.transform[5]) : lastY;
+    if (lastY !== null && y !== null && Math.abs(y - lastY) > 2) {
+      if (!text.endsWith("\n")) {
+        text += "\n";
+      }
+    } else if (text && !text.endsWith("\n") && item.str && !/^[\s，。、；：）】》]/.test(item.str) && !/[\s（【《]$/.test(text) && /[A-Za-z0-9]$/.test(text) && /^[A-Za-z0-9]/.test(item.str)) {
+      text += " ";
+    }
+    text += item.str;
+    if (item.hasEOL) {
+      text += "\n";
+    }
+    lastY = y;
+  }
+  return text;
+}
+
+async function extractDocxText(arrayBuffer) {
+  const entries = readZipCentralDirectory(arrayBuffer);
+  const entry = entries.get("word/document.xml");
+  if (!entry) {
+    throw new Error("不是有效的 DOCX 文件（缺少 word/document.xml）。");
+  }
+  const xml = await readZipEntryText(arrayBuffer, entry);
+  return docxXmlToText(xml);
+}
+
+function readZipCentralDirectory(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const bytes = new Uint8Array(arrayBuffer);
+  const entries = new Map();
+
+  let eocd = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 22 - 65535); offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) {
+    throw new Error("文件不是有效的 DOCX（zip 结构损坏）。");
+  }
+
+  const entryCount = view.getUint16(eocd + 10, true);
+  let offset = view.getUint32(eocd + 16, true);
+  const decoder = new TextDecoder("utf-8");
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+      break;
+    }
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localHeaderOffset = view.getUint32(offset + 42, true);
+    const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+    entries.set(name, { method, compressedSize, localHeaderOffset });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+async function readZipEntryText(arrayBuffer, entry) {
+  const view = new DataView(arrayBuffer);
+  const start = entry.localHeaderOffset;
+  if (view.getUint32(start, true) !== 0x04034b50) {
+    throw new Error("DOCX 内部条目损坏。");
+  }
+  const nameLength = view.getUint16(start + 26, true);
+  const extraLength = view.getUint16(start + 28, true);
+  const dataStart = start + 30 + nameLength + extraLength;
+  const compressed = new Uint8Array(arrayBuffer, dataStart, entry.compressedSize);
+
+  if (entry.method === 0) {
+    return new TextDecoder("utf-8").decode(compressed);
+  }
+  if (entry.method !== 8) {
+    throw new Error(`DOCX 使用了不支持的压缩方式（${entry.method}）。`);
+  }
+  if (typeof DecompressionStream !== "function") {
+    throw new Error("当前浏览器不支持解压 DOCX，请改用 PDF 或文本文件。");
+  }
+
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Response(stream).text();
+}
+
+function docxXmlToText(xml) {
+  return String(xml)
+    .replace(/<w:tab\b[^>]*\/>/g, "\t")
+    .replace(/<w:(?:br|cr)\b[^>]*\/>/g, "\n")
+    .replace(/<\/w:p>(?=\s*<\/w:tc>)/g, "")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<\/w:tc>/g, "\t")
+    .replace(/<\/w:tr>/g, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)));
 }
 
 function resetProfile() {

@@ -30,6 +30,9 @@ const STORAGE_KEYS = {
 
 const PROFILE_PANEL_STATE_KEY = "OJAF_PROFILE_PANEL_STATE";
 const MAX_PROFILE_PANEL_STATE_ITEMS = 20;
+const RESUME_TEXT_MAX_CHARS = 20000;
+const RESUME_PARSE_MAX_ITEMS_PER_SECTION = 12;
+const RESUME_PARSE_MAX_CUSTOM_ROWS = 8;
 const UPDATE_ALARM_NAME = "OJAF_CHECK_RELEASE_UPDATE";
 const UPDATE_CHECK_INTERVAL_MINUTES = 12 * 60;
 const UPDATE_REPOSITORY = "Br1an67/OpenJobAutofill";
@@ -116,6 +119,8 @@ async function handleMessage(message) {
       return getProfilePanelState(message.payload || {});
     case "OJAF_LIST_MODELS":
       return listModels(message.payload || {});
+    case "OJAF_PARSE_RESUME":
+      return parseResume(message.payload || {});
     case "OJAF_TEST_CONNECTION":
       return testApi(message.payload || {});
     case "OJAF_GET_UPDATE_STATUS":
@@ -490,6 +495,204 @@ async function testApi(payload) {
     parsed,
     contentPreview: typeof rawContent === "string" ? rawContent.slice(0, 800) : String(rawContent).slice(0, 800)
   };
+}
+
+async function parseResume(payload) {
+  const resumeText = String(payload.resumeText || "").trim();
+  if (!resumeText) {
+    throw new Error("Resume text is empty.");
+  }
+
+  const catalog = normalizeResumeSectionCatalog(payload.catalog);
+  if (catalog.length === 0) {
+    throw new Error("Missing resume section catalog.");
+  }
+
+  const settings = await getSettings();
+  const apiConfig = { ...settings.apiConfig, ...(payload.apiConfig || {}) };
+  const truncated = resumeText.length > RESUME_TEXT_MAX_CHARS;
+  const text = truncated ? resumeText.slice(0, RESUME_TEXT_MAX_CHARS) : resumeText;
+
+  const messages = buildResumeParseMessages(catalog, text);
+  const rawContent = await callAi(apiConfig, messages, {
+    profile: { sections: catalog },
+    profileCatalog: { sections: catalog },
+    scan: { kind: "resume-parse", fields: [], textLength: text.length }
+  });
+  const parsed = parseJsonFromText(rawContent);
+  const sections = normalizeParsedResumeSections(parsed, catalog);
+
+  return {
+    profileV2: { schemaVersion: PROFILE_SCHEMA_VERSION, sections },
+    notes: Array.isArray(parsed?.notes) ? parsed.notes.map((note) => String(note)).slice(0, 10) : [],
+    truncated,
+    textLength: text.length
+  };
+}
+
+function normalizeResumeSectionCatalog(catalog) {
+  if (!Array.isArray(catalog)) {
+    return [];
+  }
+
+  return catalog
+    .map((section) => ({
+      key: String(section?.key || "").replace(/[^\w-]/g, "").slice(0, 60),
+      title: sanitizePromptText(section?.title || "", 120),
+      kind: section?.kind === "repeat" ? "repeat" : "simple",
+      itemLabel: sanitizePromptText(section?.itemLabel || "", 60),
+      fields: Array.isArray(section?.fields)
+        ? section.fields.map((label) => sanitizePromptText(label, 120)).filter(Boolean).slice(0, 80)
+        : []
+    }))
+    .filter((section) => section.key && section.title && section.fields.length > 0)
+    .slice(0, 40);
+}
+
+function buildResumeParseMessages(catalog, resumeText) {
+  const systemPrompt = [
+    "You are a resume parsing engine for Chinese job application profiles.",
+    "You receive the plain text of one resume and a catalog of profile sections with fixed field labels.",
+    "Extract the information from the resume into the catalog structure.",
+    "Return strict JSON only. Do not include prose or explanations outside JSON.",
+    "Copy values from the resume as written. Do not invent, guess, or fabricate values that are not present in the resume.",
+    "Leave a field out entirely when the resume does not contain it. Never output empty strings, null, or placeholder text.",
+    "Keep the original language of the resume for descriptive values."
+  ].join("\n");
+
+  const schemaExample = {};
+  for (const section of catalog) {
+    schemaExample[section.key] = section.kind === "repeat"
+      ? { items: [{ title: `${section.itemLabel || section.title} 1`, values: { [section.fields[0]]: "..." }, custom: [] }] }
+      : { values: { [section.fields[0]]: "..." }, custom: [] };
+  }
+
+  const userPrompt = [
+    "Parse the resume text below into the profile section catalog.",
+    "",
+    "Return JSON with this schema (sections keyed by catalog key; omit sections the resume does not cover):",
+    JSON.stringify({ sections: schemaExample, notes: ["optional warnings"] }, null, 2),
+    "",
+    "Rules:",
+    '- Use only section keys from the catalog. Inside values, use only the field labels listed for that section. Put information that clearly belongs to a section but has no matching label into that section\'s custom array as {"label":"...","value":"..."} (at most a few per section).',
+    "- Sections with kind=repeat must use items (one item per education / job / project / award etc.), ordered from most recent to oldest. Sections with kind=simple use values directly.",
+    "- Dates: use YYYY-MM when the month is known, YYYY when only the year is known, and 至今 for ongoing entries.",
+    "- 教育经历: one item per degree; fill 学历 (本科 / 硕士研究生 / 博士研究生 etc.) and 学位 (学士 / 硕士 / 博士) when they can be determined.",
+    "- Distinguish 实习经历 (internships) from 工作经历 (full-time work). Student organization roles belong to the 干部任职经历 section.",
+    "- Language certificates such as CET-4 / CET-6 / IELTS / TOEFL go to 外语能力; software or programming skills go to 计算机技能; other certificates go to 证书.",
+    "- Copy the self-summary paragraph into 自我描述 when present.",
+    "- Long descriptions (工作内容, 项目内容, 本人职责, 项目成果) may keep multiple lines joined by newlines.",
+    "- Do not put family members, references, or emergency contacts into 基本信息.",
+    "",
+    "Profile section catalog:",
+    JSON.stringify(catalog, null, 2),
+    "",
+    "Resume text:",
+    "<<<RESUME",
+    resumeText,
+    "RESUME>>>"
+  ].join("\n");
+
+  return [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt }
+  ];
+}
+
+function normalizeParsedResumeSections(parsed, catalog) {
+  const source = isPlainObject(parsed?.sections) ? parsed.sections : isPlainObject(parsed) ? parsed : {};
+  const sections = {};
+
+  for (const config of catalog) {
+    const input = source[config.key];
+    if (input == null) {
+      continue;
+    }
+
+    if (config.kind === "repeat") {
+      const rawItems = Array.isArray(input?.items) ? input.items : Array.isArray(input) ? input : [];
+      const items = rawItems
+        .map((item, index) => normalizeParsedResumeScope(item, config, `${config.itemLabel || config.title} ${index + 1}`))
+        .filter((item) => Object.keys(item.values).length > 0 || item.custom.length > 0)
+        .slice(0, RESUME_PARSE_MAX_ITEMS_PER_SECTION);
+      if (items.length > 0) {
+        sections[config.key] = { key: config.key, title: config.title, kind: "repeat", items };
+      }
+      continue;
+    }
+
+    if (!isPlainObject(input)) {
+      continue;
+    }
+    const scope = normalizeParsedResumeScope(input, config, "");
+    if (Object.keys(scope.values).length > 0 || scope.custom.length > 0) {
+      sections[config.key] = { key: config.key, title: config.title, kind: "simple", values: scope.values, custom: scope.custom };
+    }
+  }
+
+  return sections;
+}
+
+function normalizeParsedResumeScope(input, config, fallbackTitle) {
+  const values = {};
+  const custom = [];
+  const knownLabels = new Set(config.fields);
+  const rawValues = isPlainObject(input?.values) ? input.values : isPlainObject(input) ? input : {};
+
+  for (const [label, rawValue] of Object.entries(rawValues)) {
+    if (label === "title" || label === "custom" || label === "items") {
+      continue;
+    }
+    const cleanLabel = String(label).trim().slice(0, 120);
+    const value = normalizeParsedResumeValue(rawValue);
+    if (!cleanLabel || !value) {
+      continue;
+    }
+    if (knownLabels.has(cleanLabel)) {
+      values[cleanLabel] = value;
+    } else if (custom.length < RESUME_PARSE_MAX_CUSTOM_ROWS) {
+      custom.push({ label: cleanLabel, value });
+    }
+  }
+
+  const rawCustom = Array.isArray(input?.custom) ? input.custom : [];
+  for (const row of rawCustom) {
+    const label = String(row?.label || "").trim().slice(0, 80);
+    const value = normalizeParsedResumeValue(row?.value);
+    if (!label || !value) {
+      continue;
+    }
+    if (knownLabels.has(label)) {
+      if (!values[label]) {
+        values[label] = value;
+      }
+    } else if (custom.length < RESUME_PARSE_MAX_CUSTOM_ROWS) {
+      custom.push({ label, value });
+    }
+  }
+
+  return {
+    title: String(input?.title || fallbackTitle || "").trim().slice(0, 120),
+    values,
+    custom
+  };
+}
+
+function normalizeParsedResumeValue(value) {
+  if (value == null || typeof value === "boolean") {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeParsedResumeValue(item))
+      .filter(Boolean)
+      .join("、")
+      .slice(0, 4000);
+  }
+  if (isPlainObject(value)) {
+    return "";
+  }
+  return String(value).trim().slice(0, 4000);
 }
 
 async function listModels(payload) {

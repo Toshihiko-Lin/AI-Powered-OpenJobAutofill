@@ -20,6 +20,7 @@ If this project saves you time, a GitHub Star would be appreciated. Issues and f
 - A profile panel lets you browse, search, and manually copy saved profile data for orange pending fields.
 - Optional OpenAI-compatible API or custom API support for better page-field understanding.
 - AI only helps identify page fields and matching profile-field names, not your actual resume values.
+- Optionally upload an existing resume (PDF / DOCX / TXT / MD) and let AI parse it into profile sections; this is the only feature that sends the full resume text to AI and asks for confirmation each time.
 - Autofill results use two color marks: green for filled fields and orange for fields that still need attention.
 - GitHub Release update checks are supported; the extension icon shows `NEW` when a newer release is available.
 
@@ -66,6 +67,18 @@ Firefox notes:
 
 The repository includes `sample-profile.json` if you want to test the extension before entering your own data.
 
+### Upload a resume for automatic parsing (optional)
+
+If you already have a resume file, click `Upload Resume to Auto-Parse` above the profile editor in the settings page instead of typing everything by hand:
+
+1. Configure the API first (Base URL, model name, etc.). Resume parsing requires an AI endpoint.
+2. Pick a PDF, DOCX, TXT, or MD file. Text extraction happens locally; scanned or image-only PDFs cannot be parsed.
+3. Confirm the dialog: this step sends the full resume text to the API you configured, which differs from the default "AI never sees resume values" boundary.
+4. Results are written into the editor. By default only empty fields are filled and sections that already contain entries are left untouched; tick `Overwrite existing values` to replace them.
+5. Review every field, then click `Save Profile`; nothing is saved until you do.
+
+Parsing quality depends on the model and the resume layout, so double-check dates and degree fields in particular.
+
 ## AI Settings
 
 AI is optional. If no API is configured, OpenJobAutofill still uses local rules to match and fill fields.
@@ -73,6 +86,8 @@ AI is optional. If no API is configured, OpenJobAutofill still uses local rules 
 If you want better understanding of different recruiting websites, configure your own API in the settings page. OpenAI-compatible endpoints, custom Base URLs, endpoint paths, and model names are supported. `Test API Connection` only checks the current form values; click `Save API Settings` before using them for filling. `Refresh Model Suggestions` only updates model suggestions, and model names can still be entered manually.
 
 The privacy boundary is explicit: AI requests contain the current page fields and local profile-field names only. They do not include your name, phone number, ID number, resume content, or other actual profile values. Value lookup and form filling happen locally in the browser.
+
+The single exception is resume auto-parsing: it has to send the full resume text to the model to split it into fields, so every use shows a confirmation dialog naming the destination. If you never use that feature, resume content never leaves your device.
 
 ## Updates
 
@@ -93,7 +108,7 @@ If the page refreshes, moves to another step, or dynamically loads new fields, c
 - API keys are stored only in local extension storage.
 - Page scripts are injected only after you click the extension and interact with the current page.
 - The extension never clicks the final submit button automatically.
-- The extension never sends your actual resume values to AI.
+- The extension never sends your actual resume values to AI, except when you explicitly use resume auto-parsing, which sends the full resume text to your own configured API after confirmation.
 - Update checks only access this project's GitHub Releases and do not upload resume data.
 - Always review the page after autofill, especially IDs, contact information, dates, choice fields, and declaration fields.
 
@@ -115,6 +130,10 @@ Click `Start Filling` again after moving to a new page or step. OpenJobAutofill 
 
 Use `Export Profile Backup` and `Import Profile Backup` in the settings page. The exported file uses OpenJobAutofill's own backup format and is intended for moving data between browsers or computers.
 
+### Resume parsing fails or extracts no text
+
+Make sure `Test API Connection` succeeds first. Scanned or image-only PDFs contain no extractable text; use a DOCX or save the resume as text instead. Legacy `.doc` files must be converted to `.docx`. If the model response cannot be parsed, try another model or enable the `response_format` option.
+
 ### How do I clear local data?
 
 Open the settings page and click `Clear Profile and API Settings`. This removes the saved resume profile and API configuration from the current browser.
@@ -130,3 +149,5 @@ Community link: [LINUX DO](https://linux.do) - A Chinese community for tech enth
 ## License
 
 OpenJobAutofill is open-sourced under the MIT License. See [LICENSE](LICENSE) for details.
+
+`src/vendor/` bundles [pdf.js](https://github.com/mozilla/pdf.js) (Mozilla, Apache License 2.0), used only to extract PDF text locally. See `src/vendor/LICENSE.pdfjs`.
