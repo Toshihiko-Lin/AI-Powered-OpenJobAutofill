@@ -42,7 +42,7 @@ const RESUME_PARSE_MAX_ITEMS_PER_SECTION = 12;
 const RESUME_PARSE_MAX_CUSTOM_ROWS = 8;
 const UPDATE_ALARM_NAME = "OJAF_CHECK_RELEASE_UPDATE";
 const UPDATE_CHECK_INTERVAL_MINUTES = 12 * 60;
-const UPDATE_REPOSITORY = "Toshihiko-Lin/OpenJobAutofill";
+const UPDATE_REPOSITORY = "Toshihiko-Lin/AI-Powered-OpenJobAutofill";
 const UPDATE_LATEST_RELEASE_API = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`;
 const UPDATE_RELEASES_URL = `https://github.com/${UPDATE_REPOSITORY}/releases`;
 

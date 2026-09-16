@@ -3,7 +3,7 @@
   "name": "AI-Powered OpenJobAutofill",
   "version": "1.2.0",
   "description": "AI-powered job application helper: parse your resume into a local profile, autofill forms with privacy-first AI field analysis, and learn from your edits.",
-  "homepage_url": "https://github.com/Toshihiko-Lin/OpenJobAutofill",
+  "homepage_url": "https://github.com/Toshihiko-Lin/AI-Powered-OpenJobAutofill",
   "browser_specific_settings": {
     "gecko": {
       "id": "openjobautofill@br1an67.github.io",

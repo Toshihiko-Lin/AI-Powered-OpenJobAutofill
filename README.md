@@ -43,7 +43,7 @@
 
 ### Brave / Chrome
 
-1. 克隆或下载本仓库：`git clone https://github.com/Toshihiko-Lin/OpenJobAutofill`
+1. 克隆或下载本仓库：`git clone https://github.com/Toshihiko-Lin/AI-Powered-OpenJobAutofill`
 2. 打开 `brave://extensions/` 或 `chrome://extensions/`，开启 `Developer mode`。
 3. 点击 `Load unpacked`，选择项目目录。
 4. 固定扩展图标。

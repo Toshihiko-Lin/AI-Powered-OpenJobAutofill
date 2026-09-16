@@ -43,7 +43,7 @@ Developer-mode install on Brave, Chrome, or Firefox (140+). No dependencies, no 
 
 ### Brave / Chrome
 
-1. Clone or download: `git clone https://github.com/Toshihiko-Lin/OpenJobAutofill`
+1. Clone or download: `git clone https://github.com/Toshihiko-Lin/AI-Powered-OpenJobAutofill`
 2. Open `brave://extensions/` or `chrome://extensions/` and enable `Developer mode`.
 3. Click `Load unpacked` and select the project directory.
 4. Pin the extension icon.
