@@ -6848,16 +6848,55 @@
     return (hash >>> 0).toString(36);
   }
 
+  const LEARNING_PLACEHOLDER_VALUE = /^(请选择|请先选择|请输入|请填写|选择|--|—|无|请选择日期|请选择时间)$/;
+  const LEARNING_WIDGET_VALUE_SELECTOR = [
+    ".ant-select-selection-item",
+    ".ant-select-selection-item-content",
+    ".ant-cascader-picker-label",
+    ".el-select__selected-item",
+    ".el-select__tags-text",
+    ".el-input__inner",
+    ".rc-select-selection-item",
+    "[class*='selection-item']",
+    "[class*='selected-value']",
+    "[class*='single-value']",
+    "[class*='selected-text']",
+    "[class*='display-value']"
+  ].join(",");
+
   function getLearningControlValue(element) {
     if (element instanceof HTMLSelectElement) {
       const option = element.selectedOptions?.[0];
       const text = normalizeText(option?.textContent || "", 260);
-      if (!text || /^(请选择|请先选择|--|—|无)$/.test(text)) {
-        return "";
-      }
-      return text;
+      return !text || LEARNING_PLACEHOLDER_VALUE.test(text) ? "" : text;
     }
-    return getControlCurrentValue(element);
+
+    const native = getControlCurrentValue(element);
+    if (native && !LEARNING_PLACEHOLDER_VALUE.test(native)) {
+      return native;
+    }
+
+    // Custom select / picker widgets keep the chosen text in a sibling node, not in the input.
+    const type = getControlType(element);
+    const isWidgetInput = type === "combobox" || element.readOnly || element.getAttribute("aria-readonly") === "true" || element.getAttribute("aria-haspopup");
+    if (!isWidgetInput) {
+      return native;
+    }
+    // findChoiceFieldContainer may return the control itself (role=combobox); start from the parent.
+    const container = element.parentElement ? findChoiceFieldContainer(element.parentElement) : null;
+    if (!container || container === element || container.closest(`#${PANEL_ID},#${FLOAT_ID},#${LEARNING_PANEL_ID}`)) {
+      return native;
+    }
+    for (const node of container.querySelectorAll(LEARNING_WIDGET_VALUE_SELECTOR)) {
+      if (node === element || node.contains(element)) {
+        continue;
+      }
+      const text = normalizeText(node instanceof HTMLInputElement ? node.value : node.getAttribute("title") || node.textContent, 260);
+      if (text && !LEARNING_PLACEHOLDER_VALUE.test(text) && text !== normalizeText(element.getAttribute("placeholder") || "", 260)) {
+        return text;
+      }
+    }
+    return native;
   }
 
   function setupLearningBaseline(plan, fillResults = []) {
@@ -6900,7 +6939,34 @@
     }
     learningListenersAttached = true;
     document.addEventListener("change", handleLearningControlEvent, true);
+    document.addEventListener("input", handleLearningControlEvent, true);
     document.addEventListener("focusout", handleLearningControlEvent, true);
+    document.addEventListener("click", scheduleLearningFullDiff, true);
+    document.addEventListener("keyup", scheduleLearningFullDiff, true);
+  }
+
+  let learningFullDiffTimer = null;
+
+  function scheduleLearningFullDiff(event) {
+    if (!learningTrackingEnabled || !learningBaseline) {
+      return;
+    }
+    const target = event?.target;
+    if (target instanceof Element && target.closest(`#${PANEL_ID},#${FLOAT_ID},#${LEARNING_PANEL_ID}`)) {
+      return;
+    }
+    if (learningFullDiffTimer) {
+      clearTimeout(learningFullDiffTimer);
+    }
+    learningFullDiffTimer = setTimeout(() => {
+      learningFullDiffTimer = null;
+      const before = JSON.stringify(learningRecords.map((record) => [record.id, record.newValue]));
+      scanLearningDiffNow();
+      const after = JSON.stringify(learningRecords.map((record) => [record.id, record.newValue]));
+      if (before !== after) {
+        commitLearningRecords();
+      }
+    }, 900);
   }
 
   function handleLearningControlEvent(event) {
@@ -7633,6 +7699,10 @@
               entry.candidate = { ...entry.candidate, value: record.newValue };
               entry.filled = true;
             }
+            const element = findFieldElement(entry.field);
+            if (element) {
+              markElement(element, "filled", `已写回资料库: ${record.target?.sectionTitle || ""} / ${record.target?.label || record.fieldLabel}`);
+            }
           }
         }
       }
@@ -7640,7 +7710,7 @@
       learningOtherRecords = learningOtherRecords.filter((record) => !appliedIds.has(record.id));
       await refreshCurrentProfile({ force: true });
       const errorNote = Array.isArray(result?.errors) && result.errors.length > 0 ? `，${result.errors.length} 项失败` : "";
-      setLearningPanelStatus(`已写入 ${result?.applied || 0} 项到本机资料库${errorNote}。设置页里可以继续检查。`, Boolean(errorNote));
+      setLearningPanelStatus(`已写入 ${result?.applied || 0} 项到本机资料库${errorNote}。设置页会自动刷新显示（若已打开且有未保存修改，请先处理提示）。`, Boolean(errorNote));
     } catch (error) {
       setLearningPanelStatus(`写入失败：${formatErrorMessage(error)}`, true);
     } finally {

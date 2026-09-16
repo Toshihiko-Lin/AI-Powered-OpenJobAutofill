@@ -242,6 +242,7 @@ window.addEventListener("resize", scheduleProfileSectionSync);
 
 loadSettings();
 loadUpdateStatus();
+watchExternalProfileChanges();
 
 window.addEventListener("beforeunload", (event) => {
   if (!profileHasUnsavedChanges && !apiHasUnsavedChanges) {
@@ -421,6 +422,7 @@ async function saveProfile() {
     setProfileFeedback("正在保存资料...", "busy");
     showToast("正在保存资料...", "busy", 1600);
     const profileV2 = collectProfileV2FromEditor();
+    markSelfProfileWrite();
     await sendRuntimeMessage({
       type: "OJAF_SAVE_SETTINGS",
       payload: { profileV2 }
@@ -469,6 +471,7 @@ async function importProfileFromFile() {
     const text = await file.text();
     const profileV2 = parseImportedProfileBackup(text);
     renderProfileSectionEditor(profileV2);
+    markSelfProfileWrite();
     await sendRuntimeMessage({
       type: "OJAF_SAVE_SETTINGS",
       payload: { profileV2 }
@@ -922,12 +925,44 @@ async function clearLocalData() {
   }
 
   try {
+    markSelfProfileWrite();
     await sendRuntimeMessage({ type: "OJAF_CLEAR_SETTINGS" });
     await loadSettings();
     setStatus("本地数据已清空，已恢复默认模板。");
   } catch (error) {
     setStatus(`清空失败：${error.message}`, true);
   }
+}
+
+// The learning panel on a job page writes to the same profile; keep this editor in sync so a
+// later "保存资料" click here does not overwrite what was just written back.
+let selfProfileWriteAt = 0;
+
+function markSelfProfileWrite() {
+  selfProfileWriteAt = Date.now();
+}
+
+function watchExternalProfileChanges() {
+  if (!chrome?.storage?.onChanged) {
+    return;
+  }
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !changes.profileV2) {
+      return;
+    }
+    if (Date.now() - selfProfileWriteAt < 5000) {
+      return; // this page just saved; not an external change
+    }
+    const incoming = normalizeProfileV2(changes.profileV2.newValue || createEmptyProfileV2());
+    if (!profileHasUnsavedChanges) {
+      renderProfileSectionEditor(incoming);
+      setProfileSaved("资料已更新（来自“更新资料库”或其他窗口），编辑区已刷新。");
+      showToast("资料已刷新：其他页面写回了新内容。");
+      return;
+    }
+    setProfileFeedback("其他页面刚写回了资料，但这里有未保存修改。点击“保存资料”会覆盖那些写回内容；如需保留，请先刷新本页再编辑。", "error");
+    showToast("注意：资料在其他页面被更新，保存前请先刷新本页。", "error", 5000);
+  });
 }
 
 function applyPreferences(preferences = {}) {
