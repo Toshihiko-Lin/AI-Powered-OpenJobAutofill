@@ -2389,6 +2389,15 @@
         background: rgba(31, 90, 160, 0.12);
         color: #1f5aa0;
       }
+      #${LEARNING_PANEL_ID} .arf-learn-badge.is-alias {
+        background: rgba(98, 71, 170, 0.12);
+        color: #6247aa;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-hint {
+        margin: 2px 0 4px;
+        font-size: 12px;
+        color: #6f6a60;
+      }
       #${LEARNING_PANEL_ID} .arf-learn-badge.is-custom,
       #${LEARNING_PANEL_ID} .arf-learn-badge.is-unresolved {
         background: rgba(191, 122, 24, 0.14);
@@ -4867,12 +4876,294 @@
   }
 
   function getEntryOccurrenceIndex(entry) {
+    // Position inside the repeat section is authoritative; item titles such as "硕士" / "本科"
+    // (from resume parsing) carry no number.
+    const pathIndex = getEntryItemIndex(entry);
+    if (pathIndex !== null) {
+      return pathIndex + 1;
+    }
     const text = normalizeText([entry?.subsection, entry?.category].filter(Boolean).join(" "), 120);
     const match = text.match(/(?:经历|信息|证书|奖惩|家庭|教育|工作\/实习|实习|项目|社团|学生工作)?\s*(\d+)/);
     if (!match) {
       return 0;
     }
     return Number(match[1]) || 0;
+  }
+
+  function getEntryItemIndex(entry) {
+    const match = /\.items\[(\d+)\]/.exec(String(entry?.itemId || ""));
+    return match ? Number(match[1]) : null;
+  }
+
+  function getEntrySectionKey(entry) {
+    const match = /^profileV2\.sections\.([^.[\]]+)/.exec(String(entry?.itemId || ""));
+    return match ? match[1] : "";
+  }
+
+  // Exact-label pass: a page label identical to a profile field label (directly, via the alias
+  // table, or via a learned synonym row) is the strongest signal we have. It fills fields the
+  // fuzzy scorer rejected and overrides fuzzy matches that picked a different field.
+  function addExactLabelFallbackCandidates(plan) {
+    const entries = Array.isArray(plan?.entries) ? plan.entries : [];
+    const fields = Array.isArray(plan?.scan?.fields) ? plan.scan.fields : [];
+    if (entries.length === 0 || fields.length === 0) {
+      return plan;
+    }
+
+    let candidates = plan.candidates.slice();
+    const byFieldId = new Map(candidates.map((candidate) => [candidate.fieldId, candidate]));
+    let added = 0;
+    let replaced = 0;
+
+    for (const field of fields) {
+      if (!field?.canFill) {
+        continue;
+      }
+      const label = field.inferredLabel || inferFieldLabel(field);
+      const key = normalizeMatchKey(label);
+      if (!key || key.length < 2 || isGenericFieldLabel(label)) {
+        continue;
+      }
+      const aliasHit = LEARNING_LABEL_ALIASES.find(([alias]) => normalizeMatchKey(alias) === key);
+      const canonicalKey = normalizeMatchKey(aliasHit ? aliasHit[1] : label);
+      const keys = new Set([key, canonicalKey]);
+
+      const existing = byFieldId.get(field.fieldId) || null;
+      if (existing && keys.has(normalizeMatchKey(existing.sourceLabel))) {
+        continue; // already an exact match
+      }
+
+      const exactEntries = entries.filter((entry) => entry?.hasValue && keys.has(normalizeMatchKey(entry.label)) && getEntrySectionKey(entry));
+      if (exactEntries.length === 0) {
+        continue;
+      }
+
+      const sectionKeys = [...new Set(exactEntries.map(getEntrySectionKey))];
+      const category = field.inferredCategory || inferMatchSection(field);
+      const preferred = resolveLearningSectionForField({ ...field, inferredLabel: label, inferredCategory: category });
+      const sectionKey = sectionKeys.includes(preferred) ? preferred : sectionKeys.length === 1 ? sectionKeys[0] : "";
+      if (!sectionKey || sectionKey === "family") {
+        continue; // ambiguous (姓名 lives in several sections) or family rows, which need relation logic
+      }
+
+      const matches = exactEntries
+        .filter((entry) => getEntrySectionKey(entry) === sectionKey)
+        .sort((left, right) => (getEntryItemIndex(left) ?? 0) - (getEntryItemIndex(right) ?? 0));
+      let entry = matches[0];
+      if (matches.length > 1) {
+        const siblingIndex = findNearestCandidateItemIndex(field, candidates, sectionKey);
+        entry = matches.find((item) => getEntryItemIndex(item) === siblingIndex) || entry;
+      }
+
+      const score = Math.max(60, Number(existing?.score || 0) + 1);
+      const candidate = createAutofillCandidate({ ...field, inferredLabel: label, inferredCategory: category }, entry, score);
+      if (!candidate.value) {
+        continue;
+      }
+      candidate.reason = existing
+        ? `字段名与本机资料字段一致，替换模糊匹配「${existing.sourceLabel}」`
+        : "字段名与本机资料字段一致";
+      if (existing) {
+        candidates = candidates.filter((item) => item.id !== existing.id);
+        replaced += 1;
+      } else {
+        added += 1;
+      }
+      candidates.push(candidate);
+      byFieldId.set(field.fieldId, candidate);
+    }
+
+    if (added === 0 && replaced === 0) {
+      return plan;
+    }
+    candidates.sort(compareAutofillCandidates);
+    return {
+      ...plan,
+      candidates,
+      exactLabelCount: added + replaced,
+      autoFillIds: new Set(candidates.filter((candidate) => candidate.shouldAutoFill).map((candidate) => candidate.id))
+    };
+  }
+
+  function findNearestCandidateItemIndex(field, candidates, sectionKey) {
+    const element = findFieldElement(field);
+    if (!element) {
+      return null;
+    }
+    let best = null;
+    let bestDepth = -9999;
+    for (const candidate of candidates) {
+      if (getEntrySectionKey({ itemId: candidate.sourceItemId }) !== sectionKey) {
+        continue;
+      }
+      const itemIndex = getEntryItemIndex({ itemId: candidate.sourceItemId });
+      if (itemIndex === null) {
+        continue;
+      }
+      const sibling = findFieldElement(candidate.field);
+      if (!sibling || sibling === element) {
+        continue;
+      }
+      const depth = commonAncestorDepth(element, sibling);
+      if (depth > bestDepth) {
+        bestDepth = depth;
+        best = itemIndex;
+      }
+    }
+    return best;
+  }
+
+  // Highest ancestor of `element` that contains none of `others`: the repeat block the field
+  // belongs to. Null when another field shares its immediate parent (synonyms in one block).
+  function getRepeatBlockRoot(element, others) {
+    let root = element;
+    let current = element;
+    while (current.parentElement && current.parentElement !== document.body && current.parentElement !== document.documentElement) {
+      const parent = current.parentElement;
+      if (others.some((other) => parent.contains(other))) {
+        break;
+      }
+      root = parent;
+      current = parent;
+    }
+    return root === element ? null : root;
+  }
+
+  // Repeat blocks are siblings of the same kind, each holding several controls.
+  function blocksLookLikeRepeatItems(roots) {
+    if (roots.length < 2) {
+      return false;
+    }
+    const first = roots[0];
+    return roots.every((root) => {
+      const controls = Array.from(root.querySelectorAll(CONTROL_SELECTOR)).filter(isVisible);
+      return root.parentElement === first.parentElement && root.tagName === first.tagName && controls.length >= 2;
+    });
+  }
+
+  // For a control inside a repeat block, find the profile entry index used by the block's other
+  // autofilled fields (nearest by DOM distance, so two education blocks do not bleed into each other).
+  function findNearestSiblingItemIndex(element, sectionKey) {
+    if (!element || !learningBaseline) {
+      return null;
+    }
+    let best = null;
+    let bestDepth = -1;
+    for (const entry of learningBaseline.fields.values()) {
+      const path = entry.filled && entry.candidate ? parseProfileItemPath(entry.candidate.sourceItemId) : null;
+      if (!path || path.sectionKey !== sectionKey || path.itemIndex === null) {
+        continue;
+      }
+      const sibling = findFieldElement(entry.field);
+      if (!sibling || sibling === element) {
+        continue;
+      }
+      const depth = commonAncestorDepth(element, sibling);
+      if (depth > bestDepth) {
+        bestDepth = depth;
+        best = path.itemIndex;
+      }
+    }
+    return best;
+  }
+
+  function commonAncestorDepth(left, right) {
+    let depth = 0;
+    for (let node = left; node; node = node.parentElement) {
+      if (node.contains(right)) {
+        return depth;
+      }
+      depth -= 1;
+    }
+    return -9999;
+  }
+
+  // Same-label fields that live in different repeat blocks on the page (教育经历 1 / 教育经历 2)
+  // must draw from successive profile entries, not all from the first one.
+  function alignRepeatSectionCandidates(plan) {
+    const candidates = Array.isArray(plan?.candidates) ? plan.candidates : [];
+    const entries = Array.isArray(plan?.entries) ? plan.entries : [];
+    if (candidates.length < 2 || entries.length === 0) {
+      return plan;
+    }
+
+    const domOrder = new Map((plan?.scan?.fields || []).map((field, index) => [field.fieldId, index]));
+    const groups = new Map();
+    for (const candidate of candidates) {
+      const sectionKey = getEntrySectionKey({ itemId: candidate.sourceItemId });
+      const itemIndex = getEntryItemIndex({ itemId: candidate.sourceItemId });
+      if (!sectionKey || itemIndex === null || candidate.sourceCategory === "家庭信息") {
+        continue;
+      }
+      const key = `${sectionKey}|${normalizeMatchKey(candidate.sourceLabel)}`;
+      if (!groups.has(key)) {
+        groups.set(key, { sectionKey, label: candidate.sourceLabel, items: [] });
+      }
+      groups.get(key).items.push(candidate);
+    }
+
+    const replacements = new Map();
+    let realigned = 0;
+    for (const group of groups.values()) {
+      if (group.items.length < 2) {
+        continue;
+      }
+
+      // Only distinct repeat blocks count; two synonyms inside one block must keep the same entry.
+      const elements = group.items.map((candidate) => findFieldElement(candidate.field));
+      const blocks = [];
+      group.items.forEach((candidate, index) => {
+        const element = elements[index];
+        if (!element) {
+          return;
+        }
+        const root = getRepeatBlockRoot(element, elements.filter((other, otherIndex) => other && otherIndex !== index));
+        if (!root || blocks.some((block) => block.root === root)) {
+          return;
+        }
+        blocks.push({ root, candidate, order: domOrder.get(candidate.fieldId) ?? 0 });
+      });
+      if (blocks.length < 2 || !blocksLookLikeRepeatItems(blocks.map((block) => block.root))) {
+        continue;
+      }
+      blocks.sort((left, right) => left.order - right.order);
+
+      const available = entries
+        .filter((entry) => entry?.hasValue && entry.label === group.label && getEntrySectionKey(entry) === group.sectionKey)
+        .sort((left, right) => getEntryItemIndex(left) - getEntryItemIndex(right));
+      if (available.length < 2) {
+        continue;
+      }
+
+      // Same label in every block: the block that scored best tells us how confident the
+      // label match is, so realigned siblings inherit that score instead of a penalised one.
+      const groupScore = Math.max(...group.items.map((candidate) => Number(candidate.score || 0)));
+      blocks.forEach((block, position) => {
+        const target = available[position];
+        if (!target || target.itemId === block.candidate.sourceItemId) {
+          return;
+        }
+        const original = block.candidate;
+        const next = createAutofillCandidate(original.field, target, Math.max(groupScore, Number(original.score || 0)));
+        next.confidence = Math.max(Number(original.confidence || 0), next.confidence);
+        next.mappingSource = original.mappingSource;
+        next.reason = [original.reason, `按页面第 ${position + 1} 段经历对齐到「${target.subsection || target.label}」`].filter(Boolean).join("；");
+        replacements.set(original.id, next);
+        realigned += 1;
+      });
+    }
+
+    if (realigned === 0) {
+      return plan;
+    }
+
+    const nextCandidates = candidates.map((candidate) => replacements.get(candidate.id) || candidate);
+    return {
+      ...plan,
+      candidates: nextCandidates,
+      realignedCount: realigned,
+      autoFillIds: new Set(nextCandidates.filter((candidate) => candidate.shouldAutoFill).map((candidate) => candidate.id))
+    };
   }
 
   function getOccurrenceMatchBonus(field, entry) {
@@ -5693,7 +5984,7 @@
       setAutofillProgress("整理表单字段", 42, `本地已发现 ${baseScan.fields.length} 个可见字段`);
       const aiStructure = await enhanceScanWithAi(baseScan);
       const scan = aiStructure.scan || baseScan;
-      const localPlan = buildAutofillPlan(scan);
+      const localPlan = addExactLabelFallbackCandidates(buildAutofillPlan(scan));
       let plan = localPlan;
 
       try {
@@ -5703,6 +5994,8 @@
         setAutofillAiFallback("字段理解", error);
         setAutofillProgress("本地兜底匹配", 84, `AI 不可用，正在用本地规则兜底 ${scan.fields.length} 个字段`);
       }
+
+      plan = alignRepeatSectionCandidates(plan);
 
       if (plan.mappingSource === "本地规则" && (autofillAiState.usedPhases || []).includes("表单字段识别")) {
         plan = {
@@ -7031,12 +7324,13 @@
       return;
     }
     const changedValue = detectLearningChange(entry, element);
-    if (changedValue === null) {
+    const record = changedValue === null ? null : buildLearningRecord(entry, element, changedValue);
+    if (!record) {
       removeLearningRecord(buildLearningRecordId(entry.field), { silent: true });
       commitLearningRecords();
       return;
     }
-    upsertLearningRecord(buildLearningRecord(entry, element, changedValue));
+    upsertLearningRecord(record);
     commitLearningRecords();
   }
 
@@ -7088,6 +7382,14 @@
       const pageLabelMatch = matchSchemaLabel(schemaSection, field.inferredLabel);
       const isRepeat = path.itemIndex !== null;
 
+      const alias = resolveLearningAliasTarget(field, newValue, { target: { sectionKey: path.sectionKey, itemIndex: path.itemIndex } });
+      if (alias) {
+        if (normalizeMatchKey(alias.aliasOf) === normalizeMatchKey(sourceLabel)) {
+          return null; // same field, another entry: the value exists already; nothing to learn
+        }
+        return { ...base, oldValue: "", ...alias };
+      }
+
       // The page label clearly names a different field than the one autofill used: the
       // original mapping was probably wrong, so add under the page's own label instead of
       // overwriting the profile value that was mis-filled here.
@@ -7129,7 +7431,56 @@
     }
 
     const sectionKey = resolveLearningSectionForField(field);
-    return { ...base, oldValue: "", ...resolveLearningAddTarget(sectionKey, field.inferredLabel, element) };
+    const addTarget = resolveLearningAddTarget(sectionKey, field.inferredLabel, element);
+    if (addTarget.action === "add") {
+      return { ...base, oldValue: "", ...addTarget };
+    }
+    return { ...base, oldValue: "", ...(resolveLearningAliasTarget(field, newValue, addTarget) || addTarget) };
+  }
+
+  const LEARNING_GENERIC_VALUE = /^(是|否|有|无|男|女|其他|无|none|n\/a|yes|no)$/i;
+
+  // Returns an alias target when `value` equals a value already stored in the profile: the page
+  // simply calls that field by another name (毕业院校 vs 学校, 全日制本科 vs 全日制).
+  function resolveLearningAliasTarget(field, value, fallback) {
+    const normalized = normalizeComparableValue(value);
+    if (!normalized || normalized.length < 2 || LEARNING_GENERIC_VALUE.test(normalized)) {
+      return null;
+    }
+    const preferredSection = fallback?.target?.sectionKey || "";
+    const preferredItem = Number.isInteger(fallback?.target?.itemIndex) ? fallback.target.itemIndex : null;
+    const matches = getCurrentProfileEntries()
+      .filter((entry) => entry?.hasValue && normalizeComparableValue(entry.value) === normalized)
+      .map((entry) => ({ entry, sectionKey: getEntrySectionKey(entry), itemIndex: getEntryItemIndex(entry) }))
+      .filter((match) => match.sectionKey);
+    if (matches.length === 0) {
+      return null;
+    }
+    matches.sort((left, right) => {
+      const score = (match) => (match.sectionKey === preferredSection ? 2 : 0) + (match.itemIndex === preferredItem ? 1 : 0);
+      return score(right) - score(left);
+    });
+    const best = matches[0];
+    if (preferredSection && best.sectionKey !== preferredSection && matches.some((match) => match.sectionKey !== best.sectionKey)) {
+      return null; // same value in several sections and none is the expected one: too ambiguous
+    }
+    const schemaSection = getSchemaSection(best.sectionKey);
+    const isRepeat = schemaSection ? schemaSection.kind === "repeat" : best.itemIndex !== null;
+    return {
+      action: "alias",
+      selected: true,
+      aliasOf: best.entry.label,
+      target: {
+        sectionKey: best.sectionKey,
+        sectionTitle: schemaSection?.title || getProfileSectionByKey(best.sectionKey)?.title || best.sectionKey,
+        sectionKind: isRepeat ? "repeat" : "simple",
+        kind: "custom",
+        label: normalizeText(field.inferredLabel, 80),
+        itemIndex: isRepeat ? best.itemIndex : null,
+        itemLabel: schemaSection?.itemLabel || "",
+        itemTitle: isRepeat && best.itemIndex !== null ? describeProfileItem(best.sectionKey, best.itemIndex) : ""
+      }
+    };
   }
 
   function resolveLearningSectionForField(field) {
@@ -7179,18 +7530,9 @@
   }
 
   function resolveLearningItemIndex(element, sectionKey) {
-    const root = element ? findRepeatItemRoot(element) : null;
-    if (root && learningBaseline) {
-      for (const entry of learningBaseline.fields.values()) {
-        const path = entry.filled && entry.candidate ? parseProfileItemPath(entry.candidate.sourceItemId) : null;
-        if (!path || path.sectionKey !== sectionKey || path.itemIndex === null) {
-          continue;
-        }
-        const sibling = findFieldElement(entry.field);
-        if (sibling && root.contains(sibling)) {
-          return path.itemIndex;
-        }
-      }
+    const siblingIndex = findNearestSiblingItemIndex(element, sectionKey);
+    if (siblingIndex !== null) {
+      return siblingIndex;
     }
 
     const items = getProfileSectionItems(sectionKey);
@@ -7282,10 +7624,11 @@
         continue;
       }
       const changedValue = detectLearningChange(entry, element);
-      if (changedValue === null) {
-        learningRecords = learningRecords.filter((record) => record.id !== buildLearningRecordId(entry.field));
+      const record = changedValue === null ? null : buildLearningRecord(entry, element, changedValue);
+      if (!record) {
+        learningRecords = learningRecords.filter((item) => item.id !== buildLearningRecordId(entry.field));
       } else {
-        upsertLearningRecord(buildLearningRecord(entry, element, changedValue));
+        upsertLearningRecord(record);
       }
     }
   }
@@ -7514,7 +7857,7 @@
     line.className = "arf-learn-line";
     const badge = document.createElement("span");
     badge.className = `arf-learn-badge is-${record.action}`;
-    badge.textContent = { update: "更新", add: "新增", custom: "自定义字段", unresolved: "待归类" }[record.action] || "待归类";
+    badge.textContent = { update: "更新", add: "新增", alias: "同义字段", custom: "自定义字段", unresolved: "待归类" }[record.action] || "待归类";
     const fieldName = document.createElement("span");
     fieldName.className = "arf-learn-field";
     fieldName.textContent = record.fieldLabel || "未命名字段";
@@ -7541,6 +7884,12 @@
 
     const values = document.createElement("div");
     values.className = "arf-learn-values";
+    if (record.action === "alias" && record.aliasOf) {
+      const hint = document.createElement("div");
+      hint.className = "arf-learn-hint";
+      hint.textContent = `值与「${record.aliasOf}」相同：只记住这个网站叫它「${record.fieldLabel}」，下次直接匹配。`;
+      body.append(hint);
+    }
     if (record.oldValue) {
       const old = document.createElement("s");
       old.textContent = formatCandidateValue(record.oldValue, 80);

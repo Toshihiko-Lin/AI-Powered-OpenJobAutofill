@@ -85,7 +85,7 @@ Parsing quality depends on the model and the resume layout, so double-check date
 After `Start Filling`, changes you make on the page are recorded (on by default; toggle it under "Preferences" in the settings page):
 
 - The floating card shows `N changes · update profile`; the popup also has an `Update Profile` button.
-- Each entry states where it would go: **Update** (you changed an autofilled value, e.g. a new phone number), **Add** (you filled a field the profile lacks, e.g. a student ID), or **Custom field** (the page label matches no standard field).
+- Each entry states where it would go: **Update** (you changed an autofilled value, e.g. a new phone number), **Add** (you filled a field the profile lacks, e.g. a student ID), **Synonym** (the value equals an existing profile value under a different site label, e.g. "毕业学府" vs "学校" — only the label is remembered, no duplicate field), or **Custom field** (the page label matches no standard field).
 - For repeatable sections you confirm which entry to write to, or create a new one; unmatched labels can be assigned manually or via `AI classify` (field names only, never your values).
 - Nothing is saved until you tick items and click `Write to profile`; pure formatting differences (date style, dropdown wording) are ignored automatically.
 - Unprocessed records persist across pages, so they are still there after moving to the next form step; the settings page can clear them.
