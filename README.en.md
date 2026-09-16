@@ -20,6 +20,9 @@ Campus recruiting means dozens of applications, each with a few fields your prof
 | Learn from form edits | Watches the page after autofill, floating card shows N changes; review panel distinguishes update / add / custom field, repeatable sections let you pick the entry; records persist across pages; unmatched labels can be AI-classified (field names only) |
 | Missing-field marks | Fields the profile lacks are outlined in dashed orange with a `missing N` count, so you see at a glance what still needs typing |
 | Mis-fill protection | If a local-rule match was wrong, your correction is added under the page's own label instead of overwriting the correct profile value |
+| Synonym learning | When a hand-typed value equals an existing profile value ("毕业学府" = "学校"), only the site's label is remembered so it matches next time — no duplicate field |
+| Multi-entry alignment | Two consecutive education/internship blocks on a page map to profile entries 1 and 2 instead of both getting entry 1 |
+| Exact-label pass | A page label identical to a profile field label (including common aliases and learned synonyms) matches directly and overrides fuzzy mis-matches |
 | Firefox fix | Content-script injection paths are root-anchored, fixing "Receiving end does not exist" on Firefox |
 | Preferences | Toggle live tracking, clear pending records |
 
@@ -89,6 +92,7 @@ After `Start Filling`, changes on the page are recorded (on by default; toggle u
 - Each record names its destination:
   - **Update**: you changed an autofilled value, e.g. a new phone number → update that profile item.
   - **Add**: you filled a field the profile lacks, e.g. a student ID → write it into the matching section; repeatable sections ask which entry, or create a new one.
+  - **Synonym**: the value you typed equals an existing profile value under a different label ("毕业学府" vs "学校") → only the site's wording is remembered, so it matches next time without a duplicate field.
   - **Custom field**: the page label matches no standard field → pick a section manually, or click `AI classify` (field names only, never values).
 - Pure formatting differences (date style, dropdown wording) are ignored.
 - Nothing is saved until you tick and click `Write to profile`. Unprocessed records persist across pages; settings can clear them.
