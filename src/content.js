@@ -2149,6 +2149,11 @@
         outline-offset: 2px !important;
         box-shadow: 0 0 0 4px rgba(245, 166, 35, 0.18) !important;
       }
+      [${MARK_ATTR}="missing"] {
+        outline: 2px dashed #d9822b !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 0 4px rgba(217, 130, 43, 0.12) !important;
+      }
       #${FLOAT_ID} {
         position: fixed;
         right: 18px;
@@ -2260,6 +2265,12 @@
       }
       #${FLOAT_ID} .arf-float-chip.is-warn strong {
         color: #bf7a18;
+      }
+      #${FLOAT_ID} .arf-float-chip.is-missing {
+        border: 1px dashed rgba(217, 130, 43, 0.7);
+      }
+      #${FLOAT_ID} .arf-float-chip.is-missing strong {
+        color: #d9822b;
       }
       #${FLOAT_ID} .arf-float-chip.is-learn {
         grid-column: 1 / -1;
@@ -2904,6 +2915,7 @@
       failed,
       skipped,
       pending: Number(summary?.pending ?? skipped + failed),
+      missing: Number(summary?.missing || 0),
       total: Number(summary?.total || 0),
       message: normalizeText(summary?.message || "", 160),
       aiUsage: sanitizeAutofillAiUsage(summary?.aiUsage || getAutofillAiSnapshot())
@@ -2969,10 +2981,17 @@
       chips.hidden = false;
       chips.textContent = "";
       if (autofillSummary) {
+        const missing = Number(summary.missing || 0);
+        chips.style.gridTemplateColumns = `repeat(${missing > 0 ? 3 : 2}, minmax(0, 1fr))`;
         chips.append(
           createFloatChip("is-ok", summary.filled || 0, "已填写"),
           createFloatChip("is-warn", summary.pending || 0, "待处理")
         );
+        if (missing > 0) {
+          chips.append(createFloatChip("is-missing", missing, "缺资料"));
+        }
+      } else {
+        chips.style.gridTemplateColumns = "";
       }
       if (learningCount > 0) {
         const learnChip = document.createElement("button");
@@ -5748,13 +5767,17 @@
       if (!plan || autoFillIds.size === 0) {
         setProfilePanelStatus("本页没有自动填写项，橙色字段需要手动处理。可以打开资料面板查看和复制资料。", true);
         const skippedCount = await markDeferredPlanCandidates(plan, autoFillIds);
+        const missingCount = await markMissingProfileFields(plan);
         const summary = {
           attempted: 0,
           filled: 0,
           failed: 0,
           skipped: skippedCount || plan?.candidates?.length || 0,
+          missing: missingCount,
           total: plan?.candidates?.length || 0,
-          message: "没有找到可自动填写的字段，橙色标记需要手动处理。",
+          message: missingCount > 0
+            ? "没有找到可自动填写的字段。橙色为待处理，橙色虚线为资料库中没有的字段，都需要手动处理。"
+            : "没有找到可自动填写的字段，橙色标记需要手动处理。",
           aiUsage
         };
         setAutofillSummary(summary);
@@ -5785,6 +5808,7 @@
         filled: fillResult.filled || 0,
         failed: fillResult.failed || 0,
         skipped: fillResult.skipped || 0,
+        missing: fillResult.missing || 0,
         total: fillResult.total || 0,
         aiUsage,
         aiUsed: aiUsage.used,
@@ -5862,17 +5886,19 @@
     const filledCount = results.filter((result) => result.ok).length;
     const failedCount = results.length - filledCount;
     const skippedCount = await markDeferredPlanCandidates(plan, autoFillSet);
+    const missingCount = await markMissingProfileFields(plan);
     const summary = {
       attempted: results.length,
       filled: filledCount,
       failed: failedCount,
       skipped: skippedCount,
       pending: failedCount + skippedCount,
+      missing: missingCount,
       total: plan?.candidates?.length || results.length,
-      message: `页面已标记：绿色为已填写，橙色为待处理。`,
+      message: buildAutofillSummaryMessage(missingCount),
       aiUsage: getAutofillAiSnapshot()
     };
-    setProfilePanelStatus(`已自动填写 ${filledCount} 项，待处理 ${summary.pending} 项。`);
+    setProfilePanelStatus(`已自动填写 ${filledCount} 项，待处理 ${summary.pending} 项${missingCount > 0 ? `，资料库中没有的字段 ${missingCount} 项` : ""}。`);
     setAutofillSummary(summary);
     updateAutofillDebugResults(summary, results);
     await persistProfilePanelState(getProfilePanelStateSnapshot());
@@ -5882,10 +5908,56 @@
       filled: filledCount,
       failed: failedCount,
       skipped: skippedCount,
+      missing: missingCount,
       total: plan?.candidates?.length || results.length,
       aiUsage: summary.aiUsage,
       results
     };
+  }
+
+  function buildAutofillSummaryMessage(missingCount) {
+    return missingCount > 0
+      ? "页面已标记：绿色为已填写，橙色为待处理，橙色虚线为资料库中没有的字段（填写后可通过“更新资料库”写回）。"
+      : "页面已标记：绿色为已填写，橙色为待处理。";
+  }
+
+  // Fillable, labeled controls that matched nothing in the local profile: the user must fill
+  // them by hand, and once filled they show up as 新增 in the learning panel.
+  function isMissingProfileFieldCandidate(field) {
+    if (!field?.canFill || field.hasCurrentValue) {
+      return false;
+    }
+    if (["file", "hidden", "submit", "button", "image", "reset", "checkbox", "radio", "password", "search"].includes(field.type)) {
+      return false;
+    }
+    const label = field.inferredLabel || inferFieldLabel(field);
+    if (!label || isGenericFieldLabel(label)) {
+      return false;
+    }
+    const text = compactText([label, field.placeholder, field.name, field.id].join(" "));
+    return !/验证码|captcha|搜索|search|密码|password|上传|附件|照片/i.test(text);
+  }
+
+  async function markMissingProfileFields(plan) {
+    const fields = Array.isArray(plan?.scan?.fields) ? plan.scan.fields : [];
+    const matchedIds = new Set((plan?.candidates || []).map((candidate) => candidate.fieldId));
+    let count = 0;
+    for (const field of fields) {
+      if (matchedIds.has(field.fieldId) || !isMissingProfileFieldCandidate(field)) {
+        continue;
+      }
+      const element = findFieldElement(field);
+      if (!element || element.getAttribute(MARK_ATTR)) {
+        continue;
+      }
+      const label = field.inferredLabel || inferFieldLabel(field);
+      markElement(element, "missing", `资料库中没有此字段: ${label}。手动填写后可通过“更新资料库”写回本机资料。`);
+      count += 1;
+      if (count % 12 === 0) {
+        await sleep(0);
+      }
+    }
+    return count;
   }
 
   async function markDeferredPlanCandidates(plan, autoFillIds) {

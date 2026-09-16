@@ -82,7 +82,8 @@ function applyRuntimeState(state = {}, options = {}) {
 
   if (state.autofillSummary) {
     const summary = state.autofillSummary;
-    setStatus(`上次填写：已填写 ${summary.filled || 0} 项，待处理 ${getPendingCount(summary)} 项。${formatAiCompletionNote(summary.aiUsage || state.autofillAi || {})}`);
+    const missingNote = Number(summary.missing || 0) > 0 ? `，缺资料 ${summary.missing} 项` : "";
+    setStatus(`上次填写：已填写 ${summary.filled || 0} 项，待处理 ${getPendingCount(summary)} 项${missingNote}。${formatAiCompletionNote(summary.aiUsage || state.autofillAi || {})}`);
   }
 }
 
@@ -105,14 +106,15 @@ async function startAutofill() {
     const data = response?.data || {};
     if (data.ok) {
       if (data.filled != null) {
-        setStatus(`已完成一键填写：已填写 ${data.filled || 0} 项，待处理 ${getPendingCount(data)} 项。${formatAiCompletionNote(data.aiUsage || {})}`);
+        const missingNote = Number(data.missing || 0) > 0 ? `，资料库中没有的字段 ${data.missing} 项（橙色虚线）` : "";
+        setStatus(`已完成一键填写：已填写 ${data.filled || 0} 项，待处理 ${getPendingCount(data)} 项${missingNote}。${formatAiCompletionNote(data.aiUsage || {})}`);
       } else {
         setStatus("已完成扫描处理。页面上的橙色标记需要手动处理，也可以打开资料面板查看和复制资料。");
       }
     } else if (data.reason === "cancelled") {
       setStatus("已取消填写。");
     } else if (data.reason === "no candidates") {
-      setStatus(`没有找到可自动填写的字段。橙色标记需要手动处理，也可以打开资料面板查看和复制资料。${formatAiCompletionNote(data.aiUsage || {})}`);
+      setStatus(`没有找到可自动填写的字段。橙色标记需要手动处理（虚线表示资料库中没有该字段），也可以打开资料面板查看和复制资料。${formatAiCompletionNote(data.aiUsage || {})}`);
     } else if (data.reason === "busy") {
       setStatus("当前已有扫描任务在运行，请稍候。", true);
     } else if (data.reason) {
