@@ -22,7 +22,7 @@ If this project saves you time, a GitHub Star would be appreciated. Issues and f
 - AI only helps identify page fields and matching profile-field names, not your actual resume values.
 - Optionally upload an existing resume (PDF / DOCX / TXT / MD) and let AI parse it into profile sections; this is the only feature that sends the full resume text to AI and asks for confirmation each time.
 - Fields you edit or fill in on a job form after autofill can be written back to the local profile with one click; every item is confirmed by you and values never pass through AI.
-- Autofill results use two color marks: green for filled fields and orange for fields that still need attention.
+- Autofill results use three marks: green for filled fields, orange for fields that still need attention, and dashed orange for fields the profile does not have yet.
 - GitHub Release update checks are supported; the extension icon shows `NEW` when a newer release is available.
 
 ## Installation
@@ -111,7 +111,8 @@ Before updating, export a profile backup from the settings page. Do not uninstal
 ## Color Marks
 
 - Green: filled.
-- Orange: pending manual handling or review.
+- Orange: pending — the profile has a matching value but it could not be filled automatically; handle or review it manually.
+- Dashed orange: the profile has no such field yet; fill it by hand, then write it back via "Update Profile" so it autofills next time.
 
 If the page refreshes, moves to another step, or dynamically loads new fields, click `Start Filling` again.
 
