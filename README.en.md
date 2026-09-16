@@ -100,7 +100,10 @@ If you want better understanding of different recruiting websites, configure you
 
 The privacy boundary is explicit: AI requests contain the current page fields and local profile-field names only. They do not include your name, phone number, ID number, resume content, or other actual profile values. Value lookup and form filling happen locally in the browser.
 
-The single exception is resume auto-parsing: it has to send the full resume text to the model to split it into fields, so every use shows a confirmation dialog naming the destination. If you never use that feature, resume content never leaves your device. The AI classify step in "Update Profile" likewise sends field names only.
+The AI classify step in "Update Profile" likewise sends field names only. Two exceptions, both under your control:
+
+- Resume auto-parsing has to send the full resume text to the model to split it into fields, so every use shows a confirmation dialog naming the destination.
+- AI option matching (off by default in Preferences): when a dropdown/radio has no locally matching option (未婚 vs 单身, 全日制 vs 统招), the field's stored value and the page's option list are sent so the model can pick one. Only low-sensitivity fields qualify — degree, education level, study form, political/marital status, ethnicity, city, yes/no questions; names, phone numbers, ID numbers, addresses, student IDs, salary and family members are never sent.
 
 ## Updates
 
