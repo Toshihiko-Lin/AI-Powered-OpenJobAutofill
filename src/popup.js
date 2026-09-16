@@ -13,7 +13,9 @@ const els = {
 const DEFAULT_START_LABEL = els.startAutofillBtn.textContent;
 const DEFAULT_CHECK_UPDATE_LABEL = els.checkUpdateBtn.textContent;
 const DEFAULT_LEARNING_LABEL = els.openLearningBtn.textContent;
-const CONTENT_SCRIPT_FILES = ["src/profile-schema.js", "src/content.js"];
+// Root-anchored: Firefox resolves relative paths against the popup document (src/), Chrome
+// against the extension root. A leading slash means the extension root in both.
+const CONTENT_SCRIPT_FILES = ["/src/profile-schema.js", "/src/content.js"];
 
 els.openOptions.addEventListener("click", () => chrome.runtime.openOptionsPage());
 els.startAutofillBtn.addEventListener("click", () => {
