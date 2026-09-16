@@ -3075,7 +3075,7 @@
     const titleWrap = document.createElement("div");
     const title = document.createElement("div");
     title.className = "arf-title";
-    title.textContent = "OpenJobAutofill";
+    title.textContent = "AI-Powered OpenJobAutofill";
     const subtitle = document.createElement("div");
     subtitle.className = "arf-subtitle";
     subtitle.dataset.role = "subtitle";

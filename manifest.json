@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "OpenJobAutofill",
+  "name": "AI-Powered OpenJobAutofill",
   "version": "1.2.0",
-  "description": "Local resume profile helper with privacy-first AI page analysis and one-click form filling.",
-  "homepage_url": "https://github.com/Br1an67/OpenJobAutofill",
+  "description": "AI-powered job application helper: parse your resume into a local profile, autofill forms with privacy-first AI field analysis, and learn from your edits.",
+  "homepage_url": "https://github.com/Toshihiko-Lin/OpenJobAutofill",
   "browser_specific_settings": {
     "gecko": {
       "id": "openjobautofill@br1an67.github.io",
@@ -42,7 +42,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "OpenJobAutofill",
+    "default_title": "AI-Powered OpenJobAutofill",
     "default_popup": "src/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
