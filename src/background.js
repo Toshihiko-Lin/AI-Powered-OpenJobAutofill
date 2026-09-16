@@ -25,8 +25,15 @@ const DEFAULT_PROFILE_V2 = {
 const STORAGE_KEYS = {
   profileV2: "profileV2",
   apiConfig: "apiConfig",
+  preferences: "preferences",
+  learningState: "learningState",
   updateState: "updateState"
 };
+
+const DEFAULT_PREFERENCES = {
+  learnFromEdits: true
+};
+const MAX_LEARNING_RECORDS = 300;
 
 const PROFILE_PANEL_STATE_KEY = "OJAF_PROFILE_PANEL_STATE";
 const MAX_PROFILE_PANEL_STATE_ITEMS = 20;
@@ -121,6 +128,14 @@ async function handleMessage(message) {
       return listModels(message.payload || {});
     case "OJAF_PARSE_RESUME":
       return parseResume(message.payload || {});
+    case "OJAF_GET_LEARNING_STATE":
+      return getLearningState();
+    case "OJAF_SAVE_LEARNING_RECORDS":
+      return saveLearningRecords(message.payload || {});
+    case "OJAF_DISCARD_LEARNING_RECORDS":
+      return discardLearningRecords(message.payload || {});
+    case "OJAF_APPLY_LEARNING":
+      return applyLearning(message.payload || {});
     case "OJAF_TEST_CONNECTION":
       return testApi(message.payload || {});
     case "OJAF_GET_UPDATE_STATUS":
@@ -137,11 +152,13 @@ async function handleMessage(message) {
 async function getSettings() {
   const values = await chrome.storage.local.get([
     STORAGE_KEYS.profileV2,
-    STORAGE_KEYS.apiConfig
+    STORAGE_KEYS.apiConfig,
+    STORAGE_KEYS.preferences
   ]);
   return {
     profileV2: normalizeProfileV2(values[STORAGE_KEYS.profileV2] || DEFAULT_PROFILE_V2),
-    apiConfig: { ...DEFAULT_API_CONFIG, ...(values[STORAGE_KEYS.apiConfig] || {}) }
+    apiConfig: { ...DEFAULT_API_CONFIG, ...(values[STORAGE_KEYS.apiConfig] || {}) },
+    preferences: normalizePreferences(values[STORAGE_KEYS.preferences])
   };
 }
 
@@ -156,8 +173,191 @@ async function saveSettings(payload) {
     next[STORAGE_KEYS.apiConfig] = { ...DEFAULT_API_CONFIG, ...payload.apiConfig };
   }
 
+  if (payload.preferences) {
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.preferences);
+    next[STORAGE_KEYS.preferences] = normalizePreferences({
+      ...(stored[STORAGE_KEYS.preferences] || {}),
+      ...payload.preferences
+    });
+  }
+
   await chrome.storage.local.set(next);
   return { saved: Object.keys(next) };
+}
+
+function normalizePreferences(input) {
+  const source = isPlainObject(input) ? input : {};
+  return {
+    ...DEFAULT_PREFERENCES,
+    learnFromEdits: source.learnFromEdits == null ? DEFAULT_PREFERENCES.learnFromEdits : Boolean(source.learnFromEdits)
+  };
+}
+
+// Pending "learn from page edits" records: values the user changed or added on a job form after
+// autofill, waiting for review before being merged into the local profile.
+async function getLearningState() {
+  const values = await chrome.storage.local.get(STORAGE_KEYS.learningState);
+  const records = Array.isArray(values[STORAGE_KEYS.learningState]?.records)
+    ? values[STORAGE_KEYS.learningState].records.map(normalizeLearningRecord).filter(Boolean)
+    : [];
+  return { records };
+}
+
+async function saveLearningState(records) {
+  const trimmed = records
+    .slice()
+    .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))
+    .slice(0, MAX_LEARNING_RECORDS);
+  await chrome.storage.local.set({ [STORAGE_KEYS.learningState]: { records: trimmed, updatedAt: new Date().toISOString() } });
+  return trimmed;
+}
+
+async function saveLearningRecords(payload) {
+  const pageKey = String(payload.pageKey || "").slice(0, 600);
+  if (!pageKey) {
+    throw new Error("Missing page key for learning records.");
+  }
+  const incoming = (Array.isArray(payload.records) ? payload.records : [])
+    .map(normalizeLearningRecord)
+    .filter((record) => record && record.pageKey === pageKey);
+  const { records } = await getLearningState();
+  const kept = records.filter((record) => record.pageKey !== pageKey);
+  const saved = await saveLearningState([...kept, ...incoming]);
+  return { total: saved.length, page: incoming.length };
+}
+
+async function discardLearningRecords(payload) {
+  const ids = new Set(Array.isArray(payload.ids) ? payload.ids.map(String) : []);
+  const clearAll = payload.all === true;
+  const { records } = await getLearningState();
+  const kept = clearAll ? [] : records.filter((record) => !ids.has(record.id));
+  await saveLearningState(kept);
+  return { removed: records.length - kept.length, remaining: kept.length };
+}
+
+async function applyLearning(payload) {
+  const incoming = (Array.isArray(payload.records) ? payload.records : []).map(normalizeLearningRecord).filter(Boolean);
+  if (incoming.length === 0) {
+    throw new Error("No learning records to apply.");
+  }
+
+  const settings = await getSettings();
+  const profileV2 = normalizeProfileV2(settings.profileV2);
+  const applied = [];
+  const errors = [];
+
+  for (const record of incoming) {
+    try {
+      applyLearningRecord(profileV2, record);
+      applied.push(record.id);
+    } catch (error) {
+      errors.push({ id: record.id, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (applied.length > 0) {
+    profileV2.updatedAt = new Date().toISOString();
+    await chrome.storage.local.set({ [STORAGE_KEYS.profileV2]: normalizeProfileV2(profileV2) });
+  }
+
+  const { records } = await getLearningState();
+  const appliedSet = new Set(applied);
+  const remaining = await saveLearningState(records.filter((record) => !appliedSet.has(record.id)));
+
+  return {
+    applied: applied.length,
+    appliedIds: applied,
+    errors,
+    remaining: remaining.length
+  };
+}
+
+function applyLearningRecord(profileV2, record) {
+  const target = record.target || {};
+  const value = String(record.newValue || "").trim();
+  const label = String(target.label || "").trim().slice(0, 120);
+  if (!target.sectionKey || !label || !value) {
+    throw new Error("Learning record is missing its target section, label, or value.");
+  }
+
+  let section = profileV2.sections[target.sectionKey] || null;
+  if (!section) {
+    section = profileV2.customSections.find((item) => item.key === target.sectionKey) || null;
+  }
+  if (!section) {
+    section = {
+      key: target.sectionKey,
+      title: String(target.sectionTitle || target.sectionKey).slice(0, 120),
+      kind: "simple",
+      values: {},
+      custom: []
+    };
+    profileV2.customSections.push(section);
+  }
+
+  let scope = section;
+  if (section.kind === "repeat") {
+    const items = Array.isArray(section.items) ? section.items : (section.items = []);
+    let index = Number(target.itemIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+      items.push({
+        title: String(target.itemTitle || `${target.itemLabel || section.title} ${items.length + 1}`).slice(0, 120),
+        values: {},
+        custom: []
+      });
+      index = items.length - 1;
+    }
+    scope = items[index];
+    scope.values = isPlainObject(scope.values) ? scope.values : {};
+    scope.custom = Array.isArray(scope.custom) ? scope.custom : [];
+  } else {
+    section.values = isPlainObject(section.values) ? section.values : {};
+    section.custom = Array.isArray(section.custom) ? section.custom : [];
+  }
+
+  if (target.kind === "custom") {
+    const row = scope.custom.find((item) => item.label === label);
+    if (row) {
+      row.value = value;
+    } else {
+      scope.custom.push({ label, value });
+    }
+    return;
+  }
+
+  scope.values[label] = value;
+}
+
+function normalizeLearningRecord(input) {
+  if (!isPlainObject(input) || !input.id) {
+    return null;
+  }
+  const target = isPlainObject(input.target) ? input.target : {};
+  const itemIndex = Number(target.itemIndex);
+  return {
+    id: String(input.id).slice(0, 200),
+    pageKey: String(input.pageKey || "").slice(0, 600),
+    pageTitle: String(input.pageTitle || "").slice(0, 160),
+    hostname: String(input.hostname || "").slice(0, 120),
+    fieldId: String(input.fieldId || "").slice(0, 80),
+    fieldLabel: String(input.fieldLabel || "").slice(0, 160),
+    fieldCategory: String(input.fieldCategory || "").slice(0, 60),
+    action: ["update", "add", "custom", "unresolved"].includes(input.action) ? input.action : "unresolved",
+    oldValue: String(input.oldValue == null ? "" : input.oldValue).slice(0, 4000),
+    newValue: String(input.newValue == null ? "" : input.newValue).slice(0, 4000),
+    selected: Boolean(input.selected),
+    updatedAt: String(input.updatedAt || new Date().toISOString()).slice(0, 40),
+    target: {
+      sectionKey: String(target.sectionKey || "").slice(0, 80),
+      sectionTitle: String(target.sectionTitle || "").slice(0, 120),
+      sectionKind: target.sectionKind === "repeat" ? "repeat" : "simple",
+      kind: target.kind === "custom" ? "custom" : "values",
+      label: String(target.label || "").slice(0, 120),
+      itemIndex: Number.isInteger(itemIndex) ? itemIndex : null,
+      itemLabel: String(target.itemLabel || "").slice(0, 60),
+      itemTitle: String(target.itemTitle || "").slice(0, 120)
+    }
+  };
 }
 
 async function clearSettings() {

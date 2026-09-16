@@ -21,6 +21,7 @@ If this project saves you time, a GitHub Star would be appreciated. Issues and f
 - Optional OpenAI-compatible API or custom API support for better page-field understanding.
 - AI only helps identify page fields and matching profile-field names, not your actual resume values.
 - Optionally upload an existing resume (PDF / DOCX / TXT / MD) and let AI parse it into profile sections; this is the only feature that sends the full resume text to AI and asks for confirmation each time.
+- Fields you edit or fill in on a job form after autofill can be written back to the local profile with one click; every item is confirmed by you and values never pass through AI.
 - Autofill results use two color marks: green for filled fields and orange for fields that still need attention.
 - GitHub Release update checks are supported; the extension icon shows `NEW` when a newer release is available.
 
@@ -79,6 +80,18 @@ If you already have a resume file, click `Upload Resume to Auto-Parse` above the
 
 Parsing quality depends on the model and the resume layout, so double-check dates and degree fields in particular.
 
+### Update the profile from your edits on a job form
+
+After `Start Filling`, changes you make on the page are recorded (on by default; toggle it under "Preferences" in the settings page):
+
+- The floating card shows `N changes · update profile`; the popup also has an `Update Profile` button.
+- Each entry states where it would go: **Update** (you changed an autofilled value, e.g. a new phone number), **Add** (you filled a field the profile lacks, e.g. a student ID), or **Custom field** (the page label matches no standard field).
+- For repeatable sections you confirm which entry to write to, or create a new one; unmatched labels can be assigned manually or via `AI classify` (field names only, never your values).
+- Nothing is saved until you tick items and click `Write to profile`; pure formatting differences (date style, dropdown wording) are ignored automatically.
+- Unprocessed records persist across pages, so they are still there after moving to the next form step; the settings page can clear them.
+
+If a field was autofilled incorrectly (a local-rule mismatch), your correction is written as an **Add** under the field named by the page label instead of overwriting the profile value that was wrongly used.
+
 ## AI Settings
 
 AI is optional. If no API is configured, OpenJobAutofill still uses local rules to match and fill fields.
@@ -87,7 +100,7 @@ If you want better understanding of different recruiting websites, configure you
 
 The privacy boundary is explicit: AI requests contain the current page fields and local profile-field names only. They do not include your name, phone number, ID number, resume content, or other actual profile values. Value lookup and form filling happen locally in the browser.
 
-The single exception is resume auto-parsing: it has to send the full resume text to the model to split it into fields, so every use shows a confirmation dialog naming the destination. If you never use that feature, resume content never leaves your device.
+The single exception is resume auto-parsing: it has to send the full resume text to the model to split it into fields, so every use shows a confirmation dialog naming the destination. If you never use that feature, resume content never leaves your device. The AI classify step in "Update Profile" likewise sends field names only.
 
 ## Updates
 

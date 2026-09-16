@@ -1,5 +1,5 @@
 (() => {
-  const SCRIPT_VERSION = "0.8.7-ai-first-cn";
+  const SCRIPT_VERSION = "0.9.0-learn-from-edits";
 
   if (window.__OJAF_AUTOFILL_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -14,6 +14,10 @@
   const STYLE_ID = "ojaf-autofill-style";
   const PANEL_ID = "ojaf-profile-panel";
   const FLOAT_ID = "ojaf-floating-status";
+  const LEARNING_PANEL_ID = "ojaf-learning-panel";
+  const LEARNING_DIFF_DEBOUNCE_MS = 400;
+  const LEARNING_SYNC_DEBOUNCE_MS = 500;
+  const PROFILE_SCHEMA = Array.isArray(globalThis.OJAF_PROFILE_SCHEMA) ? globalThis.OJAF_PROFILE_SCHEMA : [];
   const PANEL_HIDDEN_ATTR = "data-ojaf-hidden";
   const PANEL_COLLAPSED_ATTR = "data-ojaf-collapsed";
   const MAX_EDIT_EXPANSIONS = 20;
@@ -36,6 +40,15 @@
   let autofillRunId = 0;
   let autofillProgressTimer = null;
   let autofillAiState = createAutofillAiState();
+  let learningBaseline = null;
+  let learningRecords = [];
+  let learningOtherRecords = [];
+  let learningTrackingEnabled = true;
+  let learningListenersAttached = false;
+  let learningSyncTimer = null;
+  let learningDiffTimers = new Map();
+  let learningPanel = null;
+  let learningPanelBusy = false;
 
   const CONTROL_SELECTOR = [
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"])',
@@ -945,7 +958,9 @@
       autofillInProgress,
       autofillProgress: { ...autofillProgress },
       autofillSummary: autofillSummary ? { ...autofillSummary } : null,
-      autofillAi: getAutofillAiSnapshot()
+      autofillAi: getAutofillAiSnapshot(),
+      learningCount: learningRecords.length,
+      learningBaselineReady: Boolean(learningBaseline)
     };
   }
 
@@ -2246,6 +2261,225 @@
       #${FLOAT_ID} .arf-float-chip.is-warn strong {
         color: #bf7a18;
       }
+      #${FLOAT_ID} .arf-float-chip.is-learn {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border: 1px solid rgba(15, 107, 79, 0.35);
+        background: rgba(15, 107, 79, 0.08);
+        color: #0f6b4f;
+        font: inherit;
+        cursor: pointer;
+      }
+      #${FLOAT_ID} .arf-float-chip.is-learn strong {
+        display: inline;
+        color: #0f6b4f;
+        font-size: 16px;
+      }
+      #${LEARNING_PANEL_ID} {
+        position: fixed;
+        top: 8px;
+        right: 0;
+        width: min(470px, calc(100vw - 28px));
+        max-height: calc(100dvh - 16px);
+        display: flex;
+        flex-direction: column;
+        border: 1px solid rgba(38, 58, 44, 0.14);
+        border-radius: 18px 0 0 18px;
+        background: linear-gradient(180deg, rgba(255, 253, 247, 0.99), rgba(249, 244, 234, 0.98));
+        box-shadow: 0 18px 58px rgba(32, 33, 36, 0.2);
+        z-index: 2147483646;
+        color: #202124;
+        font: 13px/1.45 ui-serif, Georgia, "Times New Roman", "Noto Serif SC", serif;
+      }
+      #${LEARNING_PANEL_ID}[hidden] {
+        display: none;
+      }
+      #${LEARNING_PANEL_ID} * {
+        box-sizing: border-box;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid rgba(38, 58, 44, 0.1);
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #26231e;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-sub {
+        margin-top: 3px;
+        font-size: 12px;
+        color: #6f6a60;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-close {
+        border: 0;
+        background: transparent;
+        color: #6f6a60;
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-list {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 8px 12px;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-group {
+        margin: 10px 4px 6px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #6f6a60;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-item {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
+        border: 1px solid rgba(38, 58, 44, 0.1);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-item.is-unready {
+        border-style: dashed;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-item input[type="checkbox"] {
+        margin-top: 3px;
+        width: 15px;
+        height: 15px;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-body {
+        min-width: 0;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-badge {
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        background: rgba(15, 107, 79, 0.12);
+        color: #0f6b4f;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-badge.is-add {
+        background: rgba(31, 90, 160, 0.12);
+        color: #1f5aa0;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-badge.is-custom,
+      #${LEARNING_PANEL_ID} .arf-learn-badge.is-unresolved {
+        background: rgba(191, 122, 24, 0.14);
+        color: #bf7a18;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-field {
+        font-weight: 700;
+        color: #26231e;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-page {
+        font-size: 11px;
+        color: #8a847a;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-target {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        color: #4b463e;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-target select {
+        max-width: 100%;
+        padding: 2px 6px;
+        border: 1px solid rgba(38, 58, 44, 0.25);
+        border-radius: 8px;
+        background: #fffdf8;
+        color: #26231e;
+        font: inherit;
+        font-size: 12px;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-values {
+        margin-top: 4px;
+        color: #4b463e;
+        word-break: break-all;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-values s {
+        color: #8a847a;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-values strong {
+        color: #0f6b4f;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-ignore {
+        align-self: start;
+        border: 0;
+        background: transparent;
+        color: #8a847a;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-empty {
+        padding: 24px 12px;
+        text-align: center;
+        color: #6f6a60;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-foot {
+        padding: 10px 14px 14px;
+        border-top: 1px solid rgba(38, 58, 44, 0.1);
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-privacy {
+        margin-bottom: 8px;
+        font-size: 11px;
+        color: #6f6a60;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-status {
+        min-height: 1.3em;
+        margin-bottom: 8px;
+        font-size: 12px;
+        color: #4b463e;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-status.is-error {
+        color: #a94040;
+        font-weight: 700;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-actions button {
+        flex: 1;
+        min-height: 34px;
+        border: 0;
+        border-radius: 11px;
+        background: #0f6b4f;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-actions button.secondary {
+        border: 1px solid #0f6b4f;
+        background: transparent;
+        color: #0f6b4f;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-actions button.ghost {
+        border: 1px solid rgba(38, 58, 44, 0.25);
+        background: transparent;
+        color: #6f6a60;
+      }
+      #${LEARNING_PANEL_ID} .arf-learn-actions button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
       #${FLOAT_ID} .arf-float-actions {
         display: flex;
         gap: 8px;
@@ -2678,7 +2912,7 @@
   }
 
   function renderFloatingStatus() {
-    const shouldShow = Boolean(autofillProgress.active || autofillSummary);
+    const shouldShow = Boolean(autofillProgress.active || autofillSummary || learningRecords.length > 0);
     const floating = ensureFloatingStatus();
     floating.hidden = !shouldShow;
     if (!shouldShow) {
@@ -2718,27 +2952,55 @@
     }
 
     const summary = autofillSummary || {};
-    const modeBadge = getAutofillCompletionBadgeText(summary.aiUsage || autofillAiState);
+    const learningCount = learningRecords.length;
+    const modeBadge = autofillSummary ? getAutofillCompletionBadgeText(summary.aiUsage || autofillAiState) : "";
     if (title) {
-      title.textContent = "填写完成";
+      title.textContent = autofillSummary ? "填写完成" : "资料更新建议";
     }
     if (detail) {
-      detail.textContent = summary.message || "请直接在页面上检查绿色已填写和橙色待处理标记。";
+      detail.textContent = autofillSummary
+        ? summary.message || "请直接在页面上检查绿色已填写和橙色待处理标记。"
+        : `本页有 ${learningCount} 处修改可以写入本机资料库。`;
     }
     if (progress) {
       progress.hidden = true;
     }
     if (chips) {
       chips.hidden = false;
-      chips.innerHTML = `
-        <div class="arf-float-chip is-ok"><strong>${summary.filled || 0}</strong>已填写</div>
-        <div class="arf-float-chip is-warn"><strong>${summary.pending || 0}</strong>待处理</div>
-      `;
+      chips.textContent = "";
+      if (autofillSummary) {
+        chips.append(
+          createFloatChip("is-ok", summary.filled || 0, "已填写"),
+          createFloatChip("is-warn", summary.pending || 0, "待处理")
+        );
+      }
+      if (learningCount > 0) {
+        const learnChip = document.createElement("button");
+        learnChip.type = "button";
+        learnChip.className = "arf-float-chip is-learn";
+        learnChip.dataset.action = "float-learn";
+        const count = document.createElement("strong");
+        count.textContent = String(learningCount);
+        learnChip.append(count, document.createTextNode("处修改 · 点击更新资料库"));
+        learnChip.addEventListener("click", () => {
+          void openLearningPanel();
+        });
+        chips.append(learnChip);
+      }
     }
     if (aiFlag) {
       aiFlag.hidden = !modeBadge;
       aiFlag.textContent = modeBadge || "";
     }
+  }
+
+  function createFloatChip(className, count, label) {
+    const chip = document.createElement("div");
+    chip.className = `arf-float-chip ${className}`;
+    const strong = document.createElement("strong");
+    strong.textContent = String(count);
+    chip.append(strong, document.createTextNode(label));
+    return chip;
   }
 
   function setProfilePanelStatus(message, isError = false) {
@@ -2926,6 +3188,7 @@
     currentProfileLoadPromise = (async () => {
       const settings = await sendRuntimeMessage({ type: "OJAF_GET_SETTINGS" });
       currentProfileV2 = settings.profileV2 || null;
+      learningTrackingEnabled = settings.preferences?.learnFromEdits !== false;
       return currentProfileV2;
     })();
 
@@ -5496,6 +5759,7 @@
         };
         setAutofillSummary(summary);
         updateAutofillDebugResults(summary, []);
+        setupLearningBaseline(plan, []);
         return {
           ok: false,
           reason: "no candidates",
@@ -5508,6 +5772,7 @@
       setAutofillProgress("填写匹配项", 94, `本地准备填写 ${autoFillIds.size} 项`);
       const beforeCount = autoFillIds.size;
       const fillResult = await applyAutofillPlan(plan, autoFillIds, { runId });
+      setupLearningBaseline(plan, fillResult?.results || []);
       if (profilePanelVisible) {
         renderProfilePanel();
       }
@@ -6342,6 +6607,1059 @@
   }
 
   void restoreProfilePanelState();
+  void restoreLearningRecords();
+
+  // ---------------------------------------------------------------------------
+  // Learn from page edits: after autofill, watch what the user changes or adds on
+  // the form and offer to write those values back into the local profile.
+  // ---------------------------------------------------------------------------
+
+  const LEARNING_CATEGORY_TO_SECTION = {
+    "社团工作": "student",
+    "学生工作": "student",
+    "专业资格": "certificates",
+    "证书技能": "certificates",
+    "语言能力": "language",
+    "家庭信息": "family",
+    "项目经历": "project",
+    "论文著作": "papers",
+    "专利成果": "patent",
+    "计算机技能": "computer"
+  };
+
+  const LEARNING_LABEL_ALIASES = [
+    ["手机号码", "电话"],
+    ["手机号", "电话"],
+    ["手机", "电话"],
+    ["联系电话", "电话"],
+    ["电子邮箱", "邮箱"],
+    ["邮件", "邮箱"],
+    ["Email", "邮箱"],
+    ["出生年月", "出生日期"],
+    ["身份证号", "证件号码"],
+    ["身份证号码", "证件号码"],
+    ["证件号", "证件号码"],
+    ["毕业院校", "学校"],
+    ["学校名称", "学校"],
+    ["院校", "学校"],
+    ["专业名称", "专业"],
+    ["所学专业", "专业"],
+    ["学历层次", "学历"],
+    ["学位名称", "学位"],
+    ["入学时间", "开始时间"],
+    ["毕业时间", "结束时间"],
+    ["入职时间", "开始时间"],
+    ["离职时间", "结束时间"],
+    ["单位名称", "公司"],
+    ["公司名称", "公司"],
+    ["工作单位", "公司"],
+    ["实习单位", "公司"],
+    ["职位名称", "职位"],
+    ["岗位", "职位"],
+    ["岗位名称", "职位"],
+    ["职务", "职位"],
+    ["工作描述", "工作内容"],
+    ["工作职责", "工作内容"],
+    ["项目描述", "项目内容"],
+    ["项目职责", "本人职责"],
+    ["奖项名称", "奖惩名称"],
+    ["获奖时间", "奖惩时间"],
+    ["获奖名称", "奖惩名称"],
+    ["证书名称", "证书名称（技能名称）"],
+    ["技能名称", "证书名称（技能名称）"],
+    ["语种", "外语种类"],
+    ["家庭住址", "现居住详细地址"],
+    ["现住址", "现居住详细地址"],
+    ["居住地址", "现居住详细地址"],
+    ["户口所在地", "户籍"],
+    ["籍贯", "籍贯"],
+    ["自我介绍", "自我描述"]
+  ];
+
+  function getSchemaSection(sectionKey) {
+    return PROFILE_SCHEMA.find((section) => section.key === sectionKey) || null;
+  }
+
+  function resolveLearningSectionKey(category) {
+    const text = normalizeText(category, 60);
+    if (!text) {
+      return "";
+    }
+    const direct = PROFILE_SCHEMA.find((section) => normalizeProfileCategory(section.title) === text);
+    if (direct) {
+      return direct.key;
+    }
+    if (LEARNING_CATEGORY_TO_SECTION[text]) {
+      return LEARNING_CATEGORY_TO_SECTION[text];
+    }
+    const byTitle = PROFILE_SCHEMA.find((section) => section.title === text);
+    return byTitle ? byTitle.key : "";
+  }
+
+  function matchSchemaLabel(section, fieldLabel) {
+    if (!section || !Array.isArray(section.fields)) {
+      return "";
+    }
+    const key = normalizeMatchKey(fieldLabel);
+    if (!key) {
+      return "";
+    }
+
+    const exact = section.fields.find((label) => normalizeMatchKey(label) === key);
+    if (exact) {
+      return exact;
+    }
+
+    for (const [alias, target] of LEARNING_LABEL_ALIASES) {
+      if (normalizeMatchKey(alias) === key && section.fields.includes(target)) {
+        return target;
+      }
+    }
+
+    const contained = section.fields
+      .filter((label) => {
+        const labelKey = normalizeMatchKey(label);
+        return labelKey.length >= 2 && key.length >= 2 && (key.includes(labelKey) || labelKey.includes(key));
+      })
+      .sort((left, right) => Math.abs(normalizeMatchKey(left).length - key.length) - Math.abs(normalizeMatchKey(right).length - key.length));
+    return contained[0] || "";
+  }
+
+  function parseProfileItemPath(path) {
+    const match = /^profileV2\.sections\.([^.[\]]+)(?:\.items\[(\d+)\])?\.(values|custom)\[(\d+)\]/.exec(String(path || ""));
+    if (!match) {
+      return null;
+    }
+    return {
+      sectionKey: match[1],
+      itemIndex: match[2] == null ? null : Number(match[2]),
+      kind: match[3],
+      index: Number(match[4])
+    };
+  }
+
+  function getProfileSectionByKey(sectionKey) {
+    if (!currentProfileV2 || !sectionKey) {
+      return null;
+    }
+    return (
+      currentProfileV2.sections?.[sectionKey] ||
+      (Array.isArray(currentProfileV2.customSections) ? currentProfileV2.customSections.find((section) => section.key === sectionKey) : null) ||
+      null
+    );
+  }
+
+  function getProfileSectionItems(sectionKey) {
+    const section = getProfileSectionByKey(sectionKey);
+    return Array.isArray(section?.items) ? section.items : [];
+  }
+
+  function describeProfileItem(sectionKey, index) {
+    const schemaSection = getSchemaSection(sectionKey);
+    const items = getProfileSectionItems(sectionKey);
+    const item = items[index];
+    const fallback = `${schemaSection?.itemLabel || schemaSection?.title || "条目"} ${index + 1}`;
+    if (!item) {
+      return fallback;
+    }
+    const title = normalizeText(item.title || "", 60);
+    const hint = Object.values(item.values || {}).find((value) => normalizeText(value, 40));
+    return title || (hint ? `${fallback}（${normalizeText(hint, 24)}）` : fallback);
+  }
+
+  function hashLearningKey(text) {
+    let hash = 5381;
+    const value = String(text || "");
+    for (let index = 0; index < value.length; index += 1) {
+      hash = ((hash << 5) + hash + value.charCodeAt(index)) | 0;
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function getLearningControlValue(element) {
+    if (element instanceof HTMLSelectElement) {
+      const option = element.selectedOptions?.[0];
+      const text = normalizeText(option?.textContent || "", 260);
+      if (!text || /^(请选择|请先选择|--|—|无)$/.test(text)) {
+        return "";
+      }
+      return text;
+    }
+    return getControlCurrentValue(element);
+  }
+
+  function setupLearningBaseline(plan, fillResults = []) {
+    const fields = new Map();
+    const resultById = new Map((Array.isArray(fillResults) ? fillResults : []).map((result) => [result.id, result]));
+    const candidateByFieldId = new Map((plan?.candidates || []).map((candidate) => [candidate.fieldId, candidate]));
+
+    for (const field of plan?.scan?.fields || []) {
+      if (!field?.canFill) {
+        continue;
+      }
+      const candidate = candidateByFieldId.get(field.fieldId) || null;
+      const filled = Boolean(candidate && resultById.get(candidate.id)?.ok);
+      const element = findFieldElement(field);
+      const baselineValue = element ? getLearningControlValue(element) : filled ? candidate.value : field.currentValue || "";
+      fields.set(field.fieldId, {
+        field: {
+          ...field,
+          inferredLabel: candidate?.fieldLabel || field.inferredLabel || inferFieldLabel(field),
+          inferredCategory: candidate?.fieldCategory || field.inferredCategory || inferMatchSection(field)
+        },
+        baselineValue,
+        candidate,
+        filled,
+        ignoredValue: ""
+      });
+    }
+
+    learningBaseline = {
+      pageKey: getPageKey(),
+      createdAt: new Date().toISOString(),
+      fields
+    };
+    attachLearningListeners();
+  }
+
+  function attachLearningListeners() {
+    if (learningListenersAttached) {
+      return;
+    }
+    learningListenersAttached = true;
+    document.addEventListener("change", handleLearningControlEvent, true);
+    document.addEventListener("focusout", handleLearningControlEvent, true);
+  }
+
+  function handleLearningControlEvent(event) {
+    if (!learningTrackingEnabled || !learningBaseline) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest(`#${PANEL_ID},#${FLOAT_ID},#${LEARNING_PANEL_ID}`)) {
+      return;
+    }
+    const control = target.matches(CONTROL_SELECTOR) ? target : target.closest(CONTROL_SELECTOR);
+    if (!control) {
+      return;
+    }
+    scheduleLearningDiff(control);
+  }
+
+  function scheduleLearningDiff(element) {
+    const existing = learningDiffTimers.get(element);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    learningDiffTimers.set(
+      element,
+      setTimeout(() => {
+        learningDiffTimers.delete(element);
+        evaluateLearningControl(element);
+      }, LEARNING_DIFF_DEBOUNCE_MS)
+    );
+  }
+
+  function getLearningEntryForElement(element) {
+    if (!learningBaseline) {
+      return null;
+    }
+    const fieldId = element.getAttribute(FIELD_ATTR);
+    let entry = fieldId ? learningBaseline.fields.get(fieldId) : null;
+    if (entry) {
+      return entry;
+    }
+
+    // Control appeared after the scan (dynamic form section); treat its first value as new.
+    const meta = buildFieldMeta(element);
+    if (!meta.canFill) {
+      return null;
+    }
+    entry = {
+      field: { ...meta, inferredLabel: inferFieldLabel(meta), inferredCategory: inferMatchSection(meta) },
+      baselineValue: "",
+      candidate: null,
+      filled: false,
+      ignoredValue: "",
+      dynamic: true
+    };
+    learningBaseline.fields.set(meta.fieldId, entry);
+    return entry;
+  }
+
+  function evaluateLearningControl(element) {
+    const entry = getLearningEntryForElement(element);
+    if (!entry) {
+      return;
+    }
+    const changedValue = detectLearningChange(entry, element);
+    if (changedValue === null) {
+      removeLearningRecord(buildLearningRecordId(entry.field), { silent: true });
+      commitLearningRecords();
+      return;
+    }
+    upsertLearningRecord(buildLearningRecord(entry, element, changedValue));
+    commitLearningRecords();
+  }
+
+  function detectLearningChange(entry, element) {
+    const type = getControlType(element);
+    if (["checkbox", "radio", "file", "hidden", "submit", "button", "password"].includes(type)) {
+      return null;
+    }
+    const currentValue = getLearningControlValue(element);
+    if (!hasMeaningfulControlValue(element, entry.field.inferredLabel, currentValue)) {
+      return null;
+    }
+    const reference = entry.filled && entry.candidate ? entry.candidate.value : entry.baselineValue;
+    if (normalizeText(currentValue) === normalizeText(reference) || normalizeText(currentValue) === normalizeText(entry.baselineValue)) {
+      return null;
+    }
+    if (entry.ignoredValue && normalizeText(currentValue) === normalizeText(entry.ignoredValue)) {
+      return null;
+    }
+    if (reference && valuesLookEquivalent(currentValue, reference)) {
+      return null;
+    }
+    return currentValue;
+  }
+
+  function buildLearningRecordId(field) {
+    return `learn_${hashLearningKey(`${getPageKey()}|${field.cssPath || field.fieldId}`)}`;
+  }
+
+  function buildLearningRecord(entry, element, newValue) {
+    const field = entry.field;
+    const base = {
+      id: buildLearningRecordId(field),
+      pageKey: getPageKey(),
+      pageTitle: normalizeText(document.title, 120),
+      hostname: location.hostname,
+      fieldId: field.fieldId,
+      fieldLabel: field.inferredLabel || field.label || field.placeholder || field.name || "未命名字段",
+      fieldCategory: field.inferredCategory || "",
+      newValue: String(newValue),
+      updatedAt: new Date().toISOString()
+    };
+
+    const path = entry.filled && entry.candidate ? parseProfileItemPath(entry.candidate.sourceItemId) : null;
+    if (path) {
+      const schemaSection = getSchemaSection(path.sectionKey);
+      const section = getProfileSectionByKey(path.sectionKey);
+      const sourceLabel = entry.candidate.sourceLabel || "";
+      const pageLabelMatch = matchSchemaLabel(schemaSection, field.inferredLabel);
+      const isRepeat = path.itemIndex !== null;
+
+      // The page label clearly names a different field than the one autofill used: the
+      // original mapping was probably wrong, so add under the page's own label instead of
+      // overwriting the profile value that was mis-filled here.
+      if (pageLabelMatch && normalizeMatchKey(pageLabelMatch) !== normalizeMatchKey(sourceLabel)) {
+        return {
+          ...base,
+          action: "add",
+          oldValue: "",
+          selected: true,
+          target: {
+            sectionKey: path.sectionKey,
+            sectionTitle: schemaSection?.title || section?.title || path.sectionKey,
+            sectionKind: isRepeat ? "repeat" : "simple",
+            kind: "values",
+            label: pageLabelMatch,
+            itemIndex: path.itemIndex,
+            itemLabel: schemaSection?.itemLabel || "",
+            itemTitle: isRepeat ? describeProfileItem(path.sectionKey, path.itemIndex) : ""
+          }
+        };
+      }
+
+      return {
+        ...base,
+        action: "update",
+        oldValue: String(entry.candidate.value || ""),
+        selected: true,
+        target: {
+          sectionKey: path.sectionKey,
+          sectionTitle: schemaSection?.title || section?.title || path.sectionKey,
+          sectionKind: isRepeat ? "repeat" : "simple",
+          kind: path.kind,
+          label: sourceLabel,
+          itemIndex: path.itemIndex,
+          itemLabel: schemaSection?.itemLabel || "",
+          itemTitle: isRepeat ? describeProfileItem(path.sectionKey, path.itemIndex) : ""
+        }
+      };
+    }
+
+    const sectionKey = resolveLearningSectionForField(field);
+    return { ...base, oldValue: "", ...resolveLearningAddTarget(sectionKey, field.inferredLabel, element) };
+  }
+
+  function resolveLearningSectionForField(field) {
+    // Prefer the section heading the control actually sits under; fall back to the inferred
+    // category (which can be dominated by page-wide text on small forms).
+    const headingText = normalizeText(String(field.section || "").split("|")[0], 80);
+    const headingCategory = headingText ? normalizeProfileCategory(headingText) : "";
+    const keys = [];
+    for (const category of [headingCategory, field.inferredCategory]) {
+      const key = resolveLearningSectionKey(category);
+      if (key && !keys.includes(key)) {
+        keys.push(key);
+      }
+    }
+    const withLabel = keys.find((key) => matchSchemaLabel(getSchemaSection(key), field.inferredLabel));
+    return withLabel || keys[0] || "";
+  }
+
+  function resolveLearningAddTarget(sectionKey, fieldLabel, element) {
+    const schemaSection = getSchemaSection(sectionKey);
+    if (!schemaSection) {
+      return {
+        action: "unresolved",
+        selected: false,
+        target: { sectionKey: "", sectionTitle: "", sectionKind: "simple", kind: "values", label: normalizeText(fieldLabel, 80), itemIndex: null, itemLabel: "", itemTitle: "" }
+      };
+    }
+
+    const label = matchSchemaLabel(schemaSection, fieldLabel);
+    const isRepeat = schemaSection.kind === "repeat";
+    const itemIndex = isRepeat ? resolveLearningItemIndex(element, sectionKey) : null;
+    const ready = !isRepeat || Number.isInteger(itemIndex);
+    return {
+      action: label ? "add" : "custom",
+      selected: Boolean(label) && ready,
+      target: {
+        sectionKey,
+        sectionTitle: schemaSection.title,
+        sectionKind: isRepeat ? "repeat" : "simple",
+        kind: label ? "values" : "custom",
+        label: label || normalizeText(fieldLabel, 80),
+        itemIndex,
+        itemLabel: schemaSection.itemLabel || "",
+        itemTitle: Number.isInteger(itemIndex) && itemIndex >= 0 ? describeProfileItem(sectionKey, itemIndex) : ""
+      }
+    };
+  }
+
+  function resolveLearningItemIndex(element, sectionKey) {
+    const root = element ? findRepeatItemRoot(element) : null;
+    if (root && learningBaseline) {
+      for (const entry of learningBaseline.fields.values()) {
+        const path = entry.filled && entry.candidate ? parseProfileItemPath(entry.candidate.sourceItemId) : null;
+        if (!path || path.sectionKey !== sectionKey || path.itemIndex === null) {
+          continue;
+        }
+        const sibling = findFieldElement(entry.field);
+        if (sibling && root.contains(sibling)) {
+          return path.itemIndex;
+        }
+      }
+    }
+
+    const items = getProfileSectionItems(sectionKey);
+    if (items.length === 0) {
+      return -1;
+    }
+    if (items.length === 1) {
+      return 0;
+    }
+    return null;
+  }
+
+  function isLearningRecordReady(record) {
+    const target = record?.target || {};
+    return Boolean(
+      target.sectionKey &&
+        target.label &&
+        normalizeText(record.newValue) &&
+        (target.sectionKind !== "repeat" || Number.isInteger(target.itemIndex))
+    );
+  }
+
+  function upsertLearningRecord(record) {
+    const index = learningRecords.findIndex((item) => item.id === record.id);
+    if (index >= 0) {
+      const previous = learningRecords[index];
+      // Keep the user's manual target choice when only the value changed.
+      learningRecords[index] = previous.userAdjusted ? { ...previous, newValue: record.newValue, updatedAt: record.updatedAt } : record;
+    } else {
+      learningRecords.push(record);
+    }
+  }
+
+  function removeLearningRecord(id, options = {}) {
+    const before = learningRecords.length;
+    learningRecords = learningRecords.filter((record) => record.id !== id);
+    learningOtherRecords = learningOtherRecords.filter((record) => record.id !== id);
+    if (!options.silent && before !== learningRecords.length) {
+      commitLearningRecords();
+    }
+  }
+
+  function commitLearningRecords() {
+    renderFloatingStatus();
+    if (learningPanel && !learningPanel.hidden) {
+      renderLearningPanel();
+    }
+    scheduleLearningSync();
+  }
+
+  function scheduleLearningSync() {
+    if (learningSyncTimer) {
+      clearTimeout(learningSyncTimer);
+    }
+    learningSyncTimer = setTimeout(() => {
+      learningSyncTimer = null;
+      void sendRuntimeMessage({
+        type: "OJAF_SAVE_LEARNING_RECORDS",
+        payload: { pageKey: getPageKey(), records: learningRecords }
+      }).catch(() => {});
+    }, LEARNING_SYNC_DEBOUNCE_MS);
+  }
+
+  async function restoreLearningRecords() {
+    try {
+      const state = await sendRuntimeMessage({ type: "OJAF_GET_LEARNING_STATE" });
+      const pageKey = getPageKey();
+      const records = Array.isArray(state?.records) ? state.records : [];
+      learningRecords = records.filter((record) => record.pageKey === pageKey);
+      learningOtherRecords = records.filter((record) => record.pageKey !== pageKey);
+      if (learningRecords.length > 0) {
+        renderFloatingStatus();
+      }
+    } catch {
+      // background not reachable yet; records stay empty
+    }
+  }
+
+  function scanLearningDiffNow() {
+    if (!learningBaseline) {
+      return;
+    }
+    for (const entry of learningBaseline.fields.values()) {
+      if (entry.dynamic) {
+        continue;
+      }
+      const element = findFieldElement(entry.field);
+      if (!element) {
+        continue;
+      }
+      const changedValue = detectLearningChange(entry, element);
+      if (changedValue === null) {
+        learningRecords = learningRecords.filter((record) => record.id !== buildLearningRecordId(entry.field));
+      } else {
+        upsertLearningRecord(buildLearningRecord(entry, element, changedValue));
+      }
+    }
+  }
+
+  async function openLearningPanel() {
+    injectStyle();
+    const panel = ensureLearningPanel();
+    panel.hidden = false;
+    setProfilePanelVisible(false);
+    setLearningPanelStatus("正在对比页面修改...");
+    if (learningBaseline) {
+      scanLearningDiffNow();
+    }
+    try {
+      const state = await sendRuntimeMessage({ type: "OJAF_GET_LEARNING_STATE" });
+      const pageKey = getPageKey();
+      const records = Array.isArray(state?.records) ? state.records : [];
+      learningOtherRecords = records.filter((record) => record.pageKey !== pageKey);
+      if (!learningBaseline) {
+        learningRecords = records.filter((record) => record.pageKey === pageKey);
+      }
+    } catch {
+      // keep in-memory records
+    }
+    if (!currentProfileV2) {
+      await refreshCurrentProfile();
+    }
+    renderLearningPanel();
+    scheduleLearningSync();
+    setLearningPanelStatus(
+      learningBaseline
+        ? ""
+        : learningRecords.length > 0
+          ? "显示的是本页之前暂存的修改；重新点击“开始填写”后会继续实时记录。"
+          : "本页还没有执行过“开始填写”，先填写一次才能对比修改。"
+    );
+    renderFloatingStatus();
+    return { count: learningRecords.length + learningOtherRecords.length };
+  }
+
+  function closeLearningPanel() {
+    if (learningPanel) {
+      learningPanel.hidden = true;
+    }
+  }
+
+  function ensureLearningPanel() {
+    if (learningPanel && document.documentElement.contains(learningPanel)) {
+      return learningPanel;
+    }
+
+    const panel = document.createElement("section");
+    panel.id = LEARNING_PANEL_ID;
+    panel.hidden = true;
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "更新资料库");
+
+    const head = document.createElement("div");
+    head.className = "arf-learn-head";
+    const headText = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "arf-learn-title";
+    title.textContent = "更新资料库";
+    const sub = document.createElement("div");
+    sub.className = "arf-learn-sub";
+    sub.dataset.role = "learn-sub";
+    headText.append(title, sub);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "arf-learn-close";
+    close.title = "关闭";
+    close.textContent = "×";
+    close.addEventListener("click", closeLearningPanel);
+    head.append(headText, close);
+
+    const list = document.createElement("div");
+    list.className = "arf-learn-list";
+    list.dataset.role = "learn-list";
+
+    const foot = document.createElement("div");
+    foot.className = "arf-learn-foot";
+    const privacy = document.createElement("div");
+    privacy.className = "arf-learn-privacy";
+    privacy.textContent = "写入只发生在本机资料库；AI 归类只发送字段名称，不发送你填写的值。";
+    const status = document.createElement("div");
+    status.className = "arf-learn-status";
+    status.dataset.role = "learn-status";
+    const actions = document.createElement("div");
+    actions.className = "arf-learn-actions";
+    const aiButton = document.createElement("button");
+    aiButton.type = "button";
+    aiButton.className = "secondary";
+    aiButton.dataset.role = "learn-ai";
+    aiButton.textContent = "AI 归类未匹配项";
+    aiButton.addEventListener("click", () => {
+      void aiClassifyLearningRecords();
+    });
+    const applyButton = document.createElement("button");
+    applyButton.type = "button";
+    applyButton.dataset.role = "learn-apply";
+    applyButton.textContent = "写入资料库";
+    applyButton.addEventListener("click", () => {
+      void applySelectedLearningRecords();
+    });
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "ghost";
+    clearButton.dataset.role = "learn-clear";
+    clearButton.textContent = "全部忽略";
+    clearButton.addEventListener("click", () => {
+      void discardAllLearningRecords();
+    });
+    actions.append(aiButton, applyButton, clearButton);
+    foot.append(privacy, status, actions);
+
+    panel.append(head, list, foot);
+    document.documentElement.appendChild(panel);
+    learningPanel = panel;
+    return panel;
+  }
+
+  function setLearningPanelStatus(message, isError = false) {
+    const status = learningPanel?.querySelector('[data-role="learn-status"]');
+    if (!status) {
+      return;
+    }
+    status.textContent = message || "";
+    status.classList.toggle("is-error", Boolean(isError));
+  }
+
+  function getAllLearningRecords() {
+    return [...learningRecords, ...learningOtherRecords];
+  }
+
+  function findLearningRecord(id) {
+    return learningRecords.find((record) => record.id === id) || learningOtherRecords.find((record) => record.id === id) || null;
+  }
+
+  function renderLearningPanel() {
+    const panel = ensureLearningPanel();
+    const list = panel.querySelector('[data-role="learn-list"]');
+    const sub = panel.querySelector('[data-role="learn-sub"]');
+    const aiButton = panel.querySelector('[data-role="learn-ai"]');
+    const applyButton = panel.querySelector('[data-role="learn-apply"]');
+    const clearButton = panel.querySelector('[data-role="learn-clear"]');
+    if (!list) {
+      return;
+    }
+
+    list.textContent = "";
+    const all = getAllLearningRecords();
+    const selectedReady = all.filter((record) => record.selected && isLearningRecordReady(record)).length;
+    const needsAi = all.filter((record) => record.action === "unresolved" || record.action === "custom").length;
+
+    if (sub) {
+      sub.textContent = all.length > 0
+        ? `本页 ${learningRecords.length} 处，其他页面暂存 ${learningOtherRecords.length} 处。勾选后写入本机资料库，不勾选的会继续保留在这里。`
+        : "填写完成后，你在页面上修改或补填的内容会出现在这里。";
+    }
+
+    if (all.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "arf-learn-empty";
+      empty.textContent = "还没有记录到修改。填写完成后直接在网页上改动字段，这里会自动出现建议。";
+      list.append(empty);
+    } else {
+      if (learningRecords.length > 0) {
+        list.append(createLearningGroupLabel("本页修改"));
+        learningRecords.forEach((record) => list.append(renderLearningRecord(record, false)));
+      }
+      if (learningOtherRecords.length > 0) {
+        list.append(createLearningGroupLabel("其他页面暂存"));
+        learningOtherRecords.forEach((record) => list.append(renderLearningRecord(record, true)));
+      }
+    }
+
+    if (aiButton) {
+      aiButton.hidden = needsAi === 0;
+      aiButton.textContent = `AI 归类未匹配项（${needsAi}）`;
+      aiButton.disabled = learningPanelBusy;
+    }
+    if (applyButton) {
+      applyButton.textContent = selectedReady > 0 ? `写入资料库（${selectedReady}）` : "写入资料库";
+      applyButton.disabled = learningPanelBusy || selectedReady === 0;
+    }
+    if (clearButton) {
+      clearButton.disabled = learningPanelBusy || all.length === 0;
+    }
+  }
+
+  function createLearningGroupLabel(text) {
+    const label = document.createElement("div");
+    label.className = "arf-learn-group";
+    label.textContent = text;
+    return label;
+  }
+
+  function renderLearningRecord(record, isOtherPage) {
+    const item = document.createElement("div");
+    item.className = "arf-learn-item";
+    item.dataset.recordId = record.id;
+    const ready = isLearningRecordReady(record);
+    if (!ready) {
+      item.classList.add("is-unready");
+    }
+
+    const checkWrap = document.createElement("label");
+    checkWrap.className = "arf-learn-check";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = Boolean(record.selected && ready);
+    checkbox.disabled = !ready;
+    checkbox.title = ready ? "写入时包含这一项" : "先选择归属后才能写入";
+    checkbox.addEventListener("change", () => {
+      record.selected = checkbox.checked;
+      record.userAdjusted = true;
+      renderLearningPanel();
+      scheduleLearningSync();
+    });
+    checkWrap.append(checkbox);
+
+    const body = document.createElement("div");
+    body.className = "arf-learn-body";
+
+    const line = document.createElement("div");
+    line.className = "arf-learn-line";
+    const badge = document.createElement("span");
+    badge.className = `arf-learn-badge is-${record.action}`;
+    badge.textContent = { update: "更新", add: "新增", custom: "自定义字段", unresolved: "待归类" }[record.action] || "待归类";
+    const fieldName = document.createElement("span");
+    fieldName.className = "arf-learn-field";
+    fieldName.textContent = record.fieldLabel || "未命名字段";
+    line.append(badge, fieldName);
+    if (isOtherPage) {
+      const page = document.createElement("span");
+      page.className = "arf-learn-page";
+      page.textContent = record.pageTitle ? `${record.hostname} · ${record.pageTitle}` : record.hostname || "其他页面";
+      line.append(page);
+    }
+
+    const target = document.createElement("div");
+    target.className = "arf-learn-target";
+    target.append(document.createTextNode("→ "));
+    target.append(renderLearningSectionControl(record));
+    if (record.target?.sectionKey) {
+      const schemaSection = getSchemaSection(record.target.sectionKey);
+      if (schemaSection?.kind === "repeat" || record.target.sectionKind === "repeat") {
+        target.append(document.createTextNode(" / "));
+        target.append(renderLearningItemControl(record));
+      }
+      target.append(document.createTextNode(` / ${record.target.label || record.fieldLabel}`));
+    }
+
+    const values = document.createElement("div");
+    values.className = "arf-learn-values";
+    if (record.oldValue) {
+      const old = document.createElement("s");
+      old.textContent = formatCandidateValue(record.oldValue, 80);
+      values.append(old, document.createTextNode(" → "));
+    }
+    const next = document.createElement("strong");
+    next.textContent = formatCandidateValue(record.newValue, 160);
+    values.append(next);
+
+    body.append(line, target, values);
+
+    const ignore = document.createElement("button");
+    ignore.type = "button";
+    ignore.className = "arf-learn-ignore";
+    ignore.title = "忽略这一项";
+    ignore.textContent = "×";
+    ignore.addEventListener("click", () => {
+      ignoreLearningRecord(record.id);
+    });
+
+    item.append(checkWrap, body, ignore);
+    return item;
+  }
+
+  function renderLearningSectionControl(record) {
+    if (record.action === "update") {
+      const text = document.createElement("span");
+      text.textContent = record.target?.sectionTitle || record.target?.sectionKey || "";
+      return text;
+    }
+
+    const select = document.createElement("select");
+    select.title = "选择写入哪个模块";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "选择模块…";
+    select.append(placeholder);
+    for (const section of PROFILE_SCHEMA) {
+      const option = document.createElement("option");
+      option.value = section.key;
+      option.textContent = section.title;
+      select.append(option);
+    }
+    select.value = record.target?.sectionKey || "";
+    select.addEventListener("change", () => {
+      const nextKey = select.value;
+      const resolved = resolveLearningAddTarget(nextKey, record.fieldLabel, null);
+      record.action = resolved.action;
+      record.target = resolved.target;
+      record.selected = resolved.selected;
+      record.userAdjusted = true;
+      renderLearningPanel();
+      scheduleLearningSync();
+    });
+    return select;
+  }
+
+  function renderLearningItemControl(record) {
+    const sectionKey = record.target?.sectionKey || "";
+    if (record.action === "update") {
+      const text = document.createElement("span");
+      text.textContent = record.target?.itemTitle || `第 ${Number(record.target?.itemIndex) + 1} 条`;
+      return text;
+    }
+
+    const items = getProfileSectionItems(sectionKey);
+    const schemaSection = getSchemaSection(sectionKey);
+    const select = document.createElement("select");
+    select.title = "选择写入哪一条";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "选择归属…";
+    select.append(placeholder);
+    items.forEach((_item, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = describeProfileItem(sectionKey, index);
+      select.append(option);
+    });
+    const fresh = document.createElement("option");
+    fresh.value = "-1";
+    fresh.textContent = `新增一条${schemaSection?.itemLabel || ""}`;
+    select.append(fresh);
+    select.value = Number.isInteger(record.target?.itemIndex) ? String(record.target.itemIndex) : "";
+    select.addEventListener("change", () => {
+      const value = select.value;
+      record.target.itemIndex = value === "" ? null : Number(value);
+      record.target.itemTitle = value === "" || value === "-1" ? "" : describeProfileItem(sectionKey, Number(value));
+      record.selected = isLearningRecordReady(record);
+      record.userAdjusted = true;
+      renderLearningPanel();
+      scheduleLearningSync();
+    });
+    return select;
+  }
+
+  function ignoreLearningRecord(id) {
+    const record = findLearningRecord(id);
+    if (record && learningBaseline) {
+      const entry = learningBaseline.fields.get(record.fieldId);
+      if (entry) {
+        entry.ignoredValue = record.newValue;
+      }
+    }
+    const wasOtherPage = learningOtherRecords.some((item) => item.id === id);
+    removeLearningRecord(id, { silent: true });
+    if (wasOtherPage) {
+      void sendRuntimeMessage({ type: "OJAF_DISCARD_LEARNING_RECORDS", payload: { ids: [id] } }).catch(() => {});
+    }
+    commitLearningRecords();
+  }
+
+  async function discardAllLearningRecords() {
+    if (learningBaseline) {
+      for (const record of learningRecords) {
+        const entry = learningBaseline.fields.get(record.fieldId);
+        if (entry) {
+          entry.ignoredValue = record.newValue;
+        }
+      }
+    }
+    learningRecords = [];
+    learningOtherRecords = [];
+    try {
+      await sendRuntimeMessage({ type: "OJAF_DISCARD_LEARNING_RECORDS", payload: { all: true } });
+      setLearningPanelStatus("已忽略全部修改记录。");
+    } catch (error) {
+      setLearningPanelStatus(`清理失败：${formatErrorMessage(error)}`, true);
+    }
+    renderFloatingStatus();
+    renderLearningPanel();
+  }
+
+  async function applySelectedLearningRecords() {
+    const selected = getAllLearningRecords().filter((record) => record.selected && isLearningRecordReady(record));
+    if (selected.length === 0) {
+      setLearningPanelStatus("请先勾选要写入的项。", true);
+      return;
+    }
+
+    learningPanelBusy = true;
+    renderLearningPanel();
+    setLearningPanelStatus(`正在写入 ${selected.length} 项到本机资料库...`);
+    try {
+      const result = await sendRuntimeMessage({ type: "OJAF_APPLY_LEARNING", payload: { records: selected } });
+      const appliedIds = new Set(Array.isArray(result?.appliedIds) ? result.appliedIds : []);
+      if (learningBaseline) {
+        for (const record of learningRecords) {
+          if (!appliedIds.has(record.id)) {
+            continue;
+          }
+          const entry = learningBaseline.fields.get(record.fieldId);
+          if (entry) {
+            entry.baselineValue = record.newValue;
+            if (entry.candidate) {
+              entry.candidate = { ...entry.candidate, value: record.newValue };
+              entry.filled = true;
+            }
+          }
+        }
+      }
+      learningRecords = learningRecords.filter((record) => !appliedIds.has(record.id));
+      learningOtherRecords = learningOtherRecords.filter((record) => !appliedIds.has(record.id));
+      await refreshCurrentProfile({ force: true });
+      const errorNote = Array.isArray(result?.errors) && result.errors.length > 0 ? `，${result.errors.length} 项失败` : "";
+      setLearningPanelStatus(`已写入 ${result?.applied || 0} 项到本机资料库${errorNote}。设置页里可以继续检查。`, Boolean(errorNote));
+    } catch (error) {
+      setLearningPanelStatus(`写入失败：${formatErrorMessage(error)}`, true);
+    } finally {
+      learningPanelBusy = false;
+      renderFloatingStatus();
+      renderLearningPanel();
+      scheduleLearningSync();
+    }
+  }
+
+  async function aiClassifyLearningRecords() {
+    const targets = getAllLearningRecords().filter((record) => record.action === "unresolved" || record.action === "custom");
+    if (targets.length === 0) {
+      return;
+    }
+
+    const catalogFields = [];
+    const catalogSections = [];
+    for (const section of PROFILE_SCHEMA) {
+      const sectionFields = section.fields.map((label, index) => ({
+        path: `schema.${section.key}.${index}`,
+        label: `${section.title} / ${label}`,
+        aliases: [label, section.title]
+      }));
+      catalogFields.push(...sectionFields);
+      catalogSections.push({ key: section.key, title: section.title, fields: sectionFields });
+    }
+
+    const scan = {
+      url: location.href,
+      hostname: location.hostname,
+      title: normalizeText(document.title, 120),
+      fields: targets.map((record) => ({
+        fieldId: record.id,
+        type: "text",
+        label: record.fieldLabel,
+        placeholder: "",
+        required: false,
+        section: record.fieldCategory || "",
+        nearbyText: [record.fieldCategory, record.fieldLabel].filter(Boolean).join(" "),
+        options: []
+      }))
+    };
+
+    learningPanelBusy = true;
+    renderLearningPanel();
+    setLearningPanelStatus("正在用 AI 归类未匹配字段，只发送字段名称...");
+    try {
+      const response = await sendRuntimeMessage({
+        type: "OJAF_MAP_FIELDS",
+        payload: { scan, profileCatalog: { sections: catalogSections, fields: catalogFields } }
+      });
+      let resolved = 0;
+      for (const mapping of Array.isArray(response?.mappings) ? response.mappings : []) {
+        const match = /^schema\.([^.]+)\.(\d+)$/.exec(String(mapping?.sourcePath || ""));
+        const record = findLearningRecord(mapping?.fieldId);
+        if (!match || !record || Number(mapping.confidence || 0) < 0.5) {
+          continue;
+        }
+        const schemaSection = getSchemaSection(match[1]);
+        const label = schemaSection?.fields?.[Number(match[2])];
+        if (!schemaSection || !label) {
+          continue;
+        }
+        const isRepeat = schemaSection.kind === "repeat";
+        const keepItem = record.target?.sectionKey === schemaSection.key && Number.isInteger(record.target?.itemIndex);
+        const itemIndex = isRepeat ? (keepItem ? record.target.itemIndex : resolveLearningItemIndex(null, schemaSection.key)) : null;
+        record.action = "add";
+        record.target = {
+          sectionKey: schemaSection.key,
+          sectionTitle: schemaSection.title,
+          sectionKind: isRepeat ? "repeat" : "simple",
+          kind: "values",
+          label,
+          itemIndex,
+          itemLabel: schemaSection.itemLabel || "",
+          itemTitle: Number.isInteger(itemIndex) && itemIndex >= 0 ? describeProfileItem(schemaSection.key, itemIndex) : ""
+        };
+        record.selected = isLearningRecordReady(record);
+        record.userAdjusted = true;
+        resolved += 1;
+      }
+      setLearningPanelStatus(resolved > 0 ? `AI 已归类 ${resolved} 项，请检查后写入。` : "AI 没有给出可用的归类，可以手动选择模块。", resolved === 0);
+    } catch (error) {
+      setLearningPanelStatus(`AI 归类失败：${formatErrorMessage(error)}`, true);
+    } finally {
+      learningPanelBusy = false;
+      renderLearningPanel();
+      scheduleLearningSync();
+    }
+  }
 
   function setNativeValue(element, value) {
     const stringValue = value == null ? "" : String(value);
@@ -6591,6 +7909,10 @@
     if (message.type === "OJAF_CLEAR_MARKS") {
       clearMarks();
       return {};
+    }
+
+    if (message.type === "OJAF_OPEN_LEARNING_PANEL") {
+      return openLearningPanel();
     }
 
     return undefined;

@@ -4,6 +4,7 @@ const els = {
   startAutofillBtn: document.getElementById("startAutofillBtn"),
   showProfilePanelBtn: document.getElementById("showProfilePanelBtn"),
   clearMarksBtn: document.getElementById("clearMarksBtn"),
+  openLearningBtn: document.getElementById("openLearningBtn"),
   updateStatus: document.getElementById("updateStatus"),
   checkUpdateBtn: document.getElementById("checkUpdateBtn"),
   openUpdateBtn: document.getElementById("openUpdateBtn")
@@ -11,6 +12,8 @@ const els = {
 
 const DEFAULT_START_LABEL = els.startAutofillBtn.textContent;
 const DEFAULT_CHECK_UPDATE_LABEL = els.checkUpdateBtn.textContent;
+const DEFAULT_LEARNING_LABEL = els.openLearningBtn.textContent;
+const CONTENT_SCRIPT_FILES = ["src/profile-schema.js", "src/content.js"];
 
 els.openOptions.addEventListener("click", () => chrome.runtime.openOptionsPage());
 els.startAutofillBtn.addEventListener("click", () => {
@@ -21,6 +24,9 @@ els.showProfilePanelBtn.addEventListener("click", () => {
 });
 els.clearMarksBtn.addEventListener("click", () => {
   void clearMarks();
+});
+els.openLearningBtn.addEventListener("click", () => {
+  void openLearningPanel();
 });
 els.checkUpdateBtn.addEventListener("click", () => {
   void checkUpdate();
@@ -55,6 +61,8 @@ function applyRuntimeState(state = {}, options = {}) {
   const busy = Boolean(state.autofillInProgress);
   els.startAutofillBtn.disabled = busy;
   els.startAutofillBtn.textContent = busy ? "扫描中..." : DEFAULT_START_LABEL;
+  const learningCount = Number(state.learningCount || 0);
+  els.openLearningBtn.textContent = learningCount > 0 ? `更新资料库（${learningCount} 处修改）` : DEFAULT_LEARNING_LABEL;
 
   if (options.updateStatus === false) {
     return;
@@ -114,6 +122,17 @@ async function startAutofill() {
   } catch (error) {
     setStatus(`开始填写失败：${error.message}`, true);
     await syncRuntimeState({ updateStatus: false });
+  }
+}
+
+async function openLearningPanel() {
+  try {
+    const response = await sendToActiveTab({ type: "OJAF_OPEN_LEARNING_PANEL" });
+    const count = Number(response?.data?.count || 0);
+    setStatus(count > 0 ? `已打开更新资料库面板，共 ${count} 处修改待处理。` : "已打开更新资料库面板。填写完成后在页面上修改或补填的内容会记录在这里。");
+    await syncRuntimeState({ updateStatus: false });
+  } catch (error) {
+    setStatus(`打开失败：${error.message}`, true);
   }
 }
 
@@ -263,13 +282,13 @@ async function sendToActiveTab(message) {
     throw new Error("No active tab found.");
   }
 
-  await executeScript(tab.id, "src/content.js");
+  await executeScript(tab.id, CONTENT_SCRIPT_FILES);
 
   try {
     return await sendTabMessage(tab.id, message);
   } catch (firstError) {
     try {
-      await executeScript(tab.id, "src/content.js");
+      await executeScript(tab.id, CONTENT_SCRIPT_FILES);
       return await sendTabMessage(tab.id, message);
     } catch {
       throw firstError;
@@ -283,9 +302,9 @@ function queryTabs(query) {
   });
 }
 
-function executeScript(tabId, file) {
+function executeScript(tabId, files) {
   return new Promise((resolve, reject) => {
-    chrome.scripting.executeScript({ target: { tabId }, files: [file] }, () => {
+    chrome.scripting.executeScript({ target: { tabId }, files: Array.isArray(files) ? files : [files] }, () => {
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
