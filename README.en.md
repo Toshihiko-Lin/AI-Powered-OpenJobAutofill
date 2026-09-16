@@ -23,6 +23,8 @@ Campus recruiting means dozens of applications, each with a few fields your prof
 | Synonym learning | When a hand-typed value equals an existing profile value ("毕业学府" = "学校"), only the site's label is remembered so it matches next time — no duplicate field |
 | Multi-entry alignment | Two consecutive education/internship blocks on a page map to profile entries 1 and 2 instead of both getting entry 1 |
 | Exact-label pass | A page label identical to a profile field label (including common aliases and learned synonyms) matches directly and overrides fuzzy mis-matches |
+| Automatic AI classification | Opening the review panel lets AI place unmatched labels (field names only) and decide synonym vs. new field |
+| AI option matching (opt-in) | When dropdown/radio wording differs (未婚 vs 单身, 全日制 vs 统招) AI picks the closest option; off by default, low-sensitivity fields only |
 | Firefox fix | Content-script injection paths are root-anchored, fixing "Receiving end does not exist" on Firefox |
 | Preferences | Toggle live tracking, clear pending records |
 
@@ -93,7 +95,7 @@ After `Start Filling`, changes on the page are recorded (on by default; toggle u
   - **Update**: you changed an autofilled value, e.g. a new phone number → update that profile item.
   - **Add**: you filled a field the profile lacks, e.g. a student ID → write it into the matching section; repeatable sections ask which entry, or create a new one.
   - **Synonym**: the value you typed equals an existing profile value under a different label ("毕业学府" vs "学校") → only the site's wording is remembered, so it matches next time without a duplicate field.
-  - **Custom field**: the page label matches no standard field → pick a section manually, or click `AI classify` (field names only, never values).
+  - **Custom field**: the page label matches no standard field → with an API configured, opening the panel classifies it automatically (field names only, never values; can be disabled in Preferences), or pick a section manually.
 - Pure formatting differences (date style, dropdown wording) are ignored.
 - Nothing is saved until you tick and click `Write to profile`. Unprocessed records persist across pages; settings can clear them.
 
@@ -103,7 +105,10 @@ AI is optional. Without an API, autofill still uses local rules; resume parsing 
 
 OpenAI-compatible endpoints (Base URL + path + model) and custom request templates are supported. `Test API Connection` and `Refresh Model Suggestions` are in settings; model names can be typed manually.
 
-**Privacy boundary**: autofill and AI classify send page field names and local profile field names only — no names, phone numbers, ID numbers, or experience text; lookup and filling happen locally. The single exception is resume upload parsing, which must send the full resume text and therefore asks for confirmation every time.
+**Privacy boundary**: autofill and AI classify send page field names and local profile field names only — no names, phone numbers, ID numbers, or experience text; lookup and filling happen locally. Two exceptions, both under your control:
+
+- **Resume upload parsing** must send the full resume text and asks for confirmation every time.
+- **AI option matching** (off by default in Preferences): when a dropdown/radio has no locally matching option, the field's stored value and the page's option list are sent so the model can pick one. Only low-sensitivity fields qualify — degree, education level, study form, political status, marital status, ethnicity, city, yes/no questions; names, phone numbers, ID numbers, addresses, student IDs, salary and family members are never sent.
 
 ## Updates
 
@@ -122,7 +127,7 @@ Export a profile backup before updating. Do not uninstall first — overwriting 
 - Resume data and API keys live only in local extension storage.
 - Page scripts are injected only after you click the extension on the current page.
 - The extension never clicks the final submit button.
-- Autofill and AI classify never send resume values; resume upload parsing sends the full resume text to your own configured API after confirmation.
+- Autofill and AI classify never send resume values; resume upload parsing sends the full resume text to your own configured API after confirmation; AI option matching is off by default and, when enabled, sends low-sensitivity field values only.
 - Values recorded by "Update Profile" stay local and require explicit per-item confirmation before being written.
 - Update checks only access this repository's GitHub Releases.
 - Always review the page after autofill, especially IDs, contact details, dates, choice fields, and declarations.

@@ -31,7 +31,9 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_PREFERENCES = {
-  learnFromEdits: true
+  learnFromEdits: true,
+  autoClassifyLearning: true,
+  aiValueMatching: false
 };
 const MAX_LEARNING_RECORDS = 300;
 
@@ -128,6 +130,8 @@ async function handleMessage(message) {
       return listModels(message.payload || {});
     case "OJAF_PARSE_RESUME":
       return parseResume(message.payload || {});
+    case "OJAF_MATCH_OPTION":
+      return matchOption(message.payload || {});
     case "OJAF_GET_LEARNING_STATE":
       return getLearningState();
     case "OJAF_SAVE_LEARNING_RECORDS":
@@ -189,7 +193,9 @@ function normalizePreferences(input) {
   const source = isPlainObject(input) ? input : {};
   return {
     ...DEFAULT_PREFERENCES,
-    learnFromEdits: source.learnFromEdits == null ? DEFAULT_PREFERENCES.learnFromEdits : Boolean(source.learnFromEdits)
+    learnFromEdits: source.learnFromEdits == null ? DEFAULT_PREFERENCES.learnFromEdits : Boolean(source.learnFromEdits),
+    autoClassifyLearning: source.autoClassifyLearning == null ? DEFAULT_PREFERENCES.autoClassifyLearning : Boolean(source.autoClassifyLearning),
+    aiValueMatching: source.aiValueMatching == null ? DEFAULT_PREFERENCES.aiValueMatching : Boolean(source.aiValueMatching)
   };
 }
 
@@ -695,6 +701,68 @@ async function testApi(payload) {
   return {
     parsed,
     contentPreview: typeof rawContent === "string" ? rawContent.slice(0, 800) : String(rawContent).slice(0, 800)
+  };
+}
+
+// Opt-in: pick the page option that means the same as a low-sensitivity profile value
+// (全日制 vs 全日制本科, 硕士 vs 硕士研究生). The content script enforces the field allowlist;
+// this only builds the prompt and parses the answer.
+async function matchOption(payload) {
+  const fieldLabel = String(payload.fieldLabel || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  const value = String(payload.value || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const options = (Array.isArray(payload.options) ? payload.options : [])
+    .map((option) => String(option == null ? "" : option).replace(/\s+/g, " ").trim().slice(0, 120))
+    .filter(Boolean)
+    .slice(0, 80);
+  if (!value || options.length < 2) {
+    throw new Error("Option matching needs a value and at least two options.");
+  }
+
+  const settings = await getSettings();
+  const apiConfig = { ...settings.apiConfig, ...(payload.apiConfig || {}) };
+  const context = String(payload.context || "").replace(/\s+/g, " ").trim().slice(0, 200);
+
+  const messages = [
+    {
+      role: "system",
+      content: [
+        "You match a job applicant's stored answer to exactly one option offered by a form field.",
+        "Return strict JSON only: {\"index\": <number>, \"confidence\": <0-1>, \"reason\": \"<short>\"}.",
+        "Pick the option that means the same thing even when the wording differs (全日制 vs 全日制本科, 硕士 vs 硕士研究生, 中共党员 vs 党员, 未婚 vs 单身).",
+        "If the stored answer is more specific than the options, pick the option that contains it (硕士研究生 → 研究生).",
+        "If the stored answer is less specific and several options fit, pick the most common/default reading only when it is clearly implied; otherwise return -1.",
+        "Never pick an option that changes the meaning. Return index -1 when no option is equivalent."
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify(
+        {
+          fieldLabel,
+          context,
+          storedAnswer: value,
+          options: options.map((text, index) => ({ index, text }))
+        },
+        null,
+        2
+      )
+    }
+  ];
+
+  const rawContent = await callAi(apiConfig, messages, {
+    profile: { sections: [] },
+    profileCatalog: { sections: [] },
+    scan: { kind: "option-match", fields: [], fieldLabel }
+  });
+  const parsed = parseJsonFromText(rawContent);
+  const index = Number(parsed?.index);
+  const confidence = clampConfidence(parsed?.confidence);
+  const valid = Number.isInteger(index) && index >= 0 && index < options.length;
+  return {
+    index: valid ? index : -1,
+    option: valid ? options[index] : "",
+    confidence: valid ? confidence : 0,
+    reason: String(parsed?.reason || "").slice(0, 200)
   };
 }
 

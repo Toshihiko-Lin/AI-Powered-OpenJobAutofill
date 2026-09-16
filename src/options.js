@@ -29,6 +29,8 @@ const fields = {
   apiPreview: document.getElementById("apiPreview"),
   checkUpdateButton: document.getElementById("checkUpdate"),
   prefLearnFromEdits: document.getElementById("prefLearnFromEdits"),
+  prefAutoClassifyLearning: document.getElementById("prefAutoClassifyLearning"),
+  prefAiValueMatching: document.getElementById("prefAiValueMatching"),
   clearLearningButton: document.getElementById("clearLearningRecords"),
   preferencesFeedback: document.getElementById("preferencesFeedback"),
   openUpdateButton: document.getElementById("openUpdatePage"),
@@ -230,6 +232,12 @@ fields.checkUpdateButton?.addEventListener("click", () => {
 });
 fields.prefLearnFromEdits?.addEventListener("change", () => {
   void savePreferences({ learnFromEdits: fields.prefLearnFromEdits.checked });
+});
+fields.prefAutoClassifyLearning?.addEventListener("change", () => {
+  void savePreferences({ autoClassifyLearning: fields.prefAutoClassifyLearning.checked });
+});
+fields.prefAiValueMatching?.addEventListener("change", () => {
+  void savePreferences({ aiValueMatching: fields.prefAiValueMatching.checked });
 });
 fields.clearLearningButton?.addEventListener("click", () => {
   void clearLearningRecords();
@@ -969,15 +977,24 @@ function applyPreferences(preferences = {}) {
   if (fields.prefLearnFromEdits) {
     fields.prefLearnFromEdits.checked = preferences?.learnFromEdits !== false;
   }
+  if (fields.prefAutoClassifyLearning) {
+    fields.prefAutoClassifyLearning.checked = preferences?.autoClassifyLearning !== false;
+  }
+  if (fields.prefAiValueMatching) {
+    fields.prefAiValueMatching.checked = preferences?.aiValueMatching === true;
+  }
 }
 
 async function savePreferences(patch) {
   try {
     await sendRuntimeMessage({ type: "OJAF_SAVE_SETTINGS", payload: { preferences: patch } });
-    setPreferencesFeedback(
-      patch.learnFromEdits === false ? "已关闭自动记录；仍可在弹窗里手动点击“更新资料库”。" : "已开启：填写后会自动记录页面修改。",
-      "saved"
-    );
+    const messages = {
+      learnFromEdits: patch.learnFromEdits === false ? "已关闭自动记录；仍可在弹窗里手动点击“更新资料库”。" : "已开启：填写后会自动记录页面修改。",
+      autoClassifyLearning: patch.autoClassifyLearning === false ? "已关闭：打开面板时不再自动调用 AI 归类。" : "已开启：打开面板时自动用 AI 归类未匹配字段（只发字段名）。",
+      aiValueMatching: patch.aiValueMatching === true ? "已开启 AI 选项匹配：低敏感字段的值会在本地匹配失败时发给 API。" : "已关闭 AI 选项匹配：不会发送任何资料值。"
+    };
+    const key = Object.keys(patch)[0];
+    setPreferencesFeedback(messages[key] || "偏好已保存。", "saved");
   } catch (error) {
     setPreferencesFeedback(`保存偏好失败：${error.message}`, "error");
   }

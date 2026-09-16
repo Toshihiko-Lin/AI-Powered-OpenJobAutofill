@@ -44,6 +44,10 @@
   let learningRecords = [];
   let learningOtherRecords = [];
   let learningTrackingEnabled = true;
+  let learningAutoClassify = true;
+  let aiValueMatchingEnabled = false;
+  let currentApiUsable = false;
+  const aiOptionMatchCache = new Map();
   let learningListenersAttached = false;
   let learningSyncTimer = null;
   let learningDiffTimers = new Map();
@@ -3217,6 +3221,10 @@
       const settings = await sendRuntimeMessage({ type: "OJAF_GET_SETTINGS" });
       currentProfileV2 = settings.profileV2 || null;
       learningTrackingEnabled = settings.preferences?.learnFromEdits !== false;
+      learningAutoClassify = settings.preferences?.autoClassifyLearning !== false;
+      aiValueMatchingEnabled = settings.preferences?.aiValueMatching === true;
+      const api = settings.apiConfig || {};
+      currentApiUsable = api.mode === "custom" ? Boolean(api.customUrl) : Boolean(api.baseUrl && api.model);
       return currentProfileV2;
     })();
 
@@ -6280,10 +6288,13 @@
     return count;
   }
 
+  let currentFillCandidate = null;
+
   async function fillElementSmart(element, value, field, candidate) {
     if (!element) {
       return { ok: false, reason: "field not found" };
     }
+    currentFillCandidate = candidate || null;
 
     const type = getControlType(element);
     if (element.disabled || element.getAttribute("aria-disabled") === "true") {
@@ -6330,7 +6341,14 @@
 
     if (element instanceof HTMLSelectElement) {
       const matched = setSelectValue(element, value);
-      return { ok: true, warning: matched ? "" : "下拉选项需要手动确认，已尝试按原值填写" };
+      if (matched) {
+        return { ok: true };
+      }
+      const picked = await aiPickOption(field, candidate, value, Array.from(element.options).map((option) => option.textContent));
+      if (picked && setSelectValue(element, picked.option)) {
+        return { ok: true, warning: `AI 选项匹配：${picked.option}`, aiMatched: true };
+      }
+      return { ok: true, warning: "下拉选项需要手动确认，已尝试按原值填写" };
     }
 
     if (element.isContentEditable) {
@@ -6430,12 +6448,24 @@
     }
 
     if (!matched) {
-      return { ok: false, reason: "no matching radio option" };
+      return aiPickRadio(group, value, field, candidate);
     }
 
     matched.click();
     matched.dispatchEvent(new Event("change", { bubbles: true }));
     return { ok: true };
+  }
+
+  async function aiPickRadio(group, value, field, candidate) {
+    const labels = group.map((radio) => normalizeText(getChoiceLabelText(radio), 120));
+    const picked = await aiPickOption(field, candidate, value, labels);
+    const index = picked ? labels.indexOf(picked.option) : -1;
+    if (index < 0) {
+      return { ok: false, reason: "no matching radio option" };
+    }
+    group[index].click();
+    group[index].dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, warning: `AI 选项匹配：${picked.option}`, aiMatched: true };
   }
 
   function getChoiceLabelText(element) {
@@ -6563,6 +6593,20 @@
         clickActionElement(retryMatched);
         await sleep(120);
         return { ok: true };
+      }
+      // the typed text filtered the list; restore the full option list for the AI fallback
+      setNativeValue(searchInput, "");
+      await sleep(120);
+    }
+
+    const allOptions = findVisibleChoiceOptions(container).filter((option) => isVisible(option));
+    const picked = await aiPickOption(field, currentFillCandidate, value, allOptions.map((option) => getElementText(option)));
+    if (picked) {
+      const chosen = allOptions.find((option) => normalizeText(getElementText(option), 120) === picked.option);
+      if (chosen) {
+        clickActionElement(chosen);
+        await sleep(120);
+        return { ok: true, warning: `AI 选项匹配：${picked.option}`, aiMatched: true };
       }
     }
 
@@ -7666,6 +7710,9 @@
           : "本页还没有执行过“开始填写”，先填写一次才能对比修改。"
     );
     renderFloatingStatus();
+    if (learningAutoClassify && currentApiUsable) {
+      void aiClassifyLearningRecords({ auto: true });
+    }
     return { count: learningRecords.length + learningOtherRecords.length };
   }
 
@@ -8070,8 +8117,10 @@
     }
   }
 
-  async function aiClassifyLearningRecords() {
-    const targets = getAllLearningRecords().filter((record) => record.action === "unresolved" || record.action === "custom");
+  async function aiClassifyLearningRecords(options = {}) {
+    const targets = getAllLearningRecords().filter(
+      (record) => (record.action === "unresolved" || record.action === "custom") && !(options.auto && record.aiClassified)
+    );
     if (targets.length === 0) {
       return;
     }
@@ -8106,7 +8155,10 @@
 
     learningPanelBusy = true;
     renderLearningPanel();
-    setLearningPanelStatus("正在用 AI 归类未匹配字段，只发送字段名称...");
+    setLearningPanelStatus(options.auto ? "正在自动用 AI 归类未匹配字段，只发送字段名称..." : "正在用 AI 归类未匹配字段，只发送字段名称...");
+    targets.forEach((record) => {
+      record.aiClassified = true;
+    });
     try {
       const response = await sendRuntimeMessage({
         type: "OJAF_MAP_FIELDS",
@@ -8126,14 +8178,28 @@
         }
         const isRepeat = schemaSection.kind === "repeat";
         const keepItem = record.target?.sectionKey === schemaSection.key && Number.isInteger(record.target?.itemIndex);
-        const itemIndex = isRepeat ? (keepItem ? record.target.itemIndex : resolveLearningItemIndex(null, schemaSection.key)) : null;
-        record.action = "add";
+        let itemIndex = isRepeat ? (keepItem ? record.target.itemIndex : resolveLearningItemIndex(null, schemaSection.key)) : null;
+
+        // AI says the page label names schema field `label`. If that field already holds the
+        // typed value somewhere in the section, this is a synonym label, not a new value.
+        const normalizedValue = normalizeComparableValue(record.newValue);
+        const sameValueEntry = getCurrentProfileEntries().find(
+          (entry) => entry?.hasValue && getEntrySectionKey(entry) === schemaSection.key && normalizeMatchKey(entry.label) === normalizeMatchKey(label) && normalizeComparableValue(entry.value) === normalizedValue
+        );
+        if (sameValueEntry) {
+          itemIndex = isRepeat ? getEntryItemIndex(sameValueEntry) : null;
+          record.action = "alias";
+          record.aliasOf = label;
+        } else {
+          record.action = "add";
+          record.aliasOf = "";
+        }
         record.target = {
           sectionKey: schemaSection.key,
           sectionTitle: schemaSection.title,
           sectionKind: isRepeat ? "repeat" : "simple",
-          kind: "values",
-          label,
+          kind: record.action === "alias" ? "custom" : "values",
+          label: record.action === "alias" ? normalizeText(record.fieldLabel, 80) : label,
           itemIndex,
           itemLabel: schemaSection.itemLabel || "",
           itemTitle: Number.isInteger(itemIndex) && itemIndex >= 0 ? describeProfileItem(schemaSection.key, itemIndex) : ""
@@ -8142,7 +8208,12 @@
         record.userAdjusted = true;
         resolved += 1;
       }
-      setLearningPanelStatus(resolved > 0 ? `AI 已归类 ${resolved} 项，请检查后写入。` : "AI 没有给出可用的归类，可以手动选择模块。", resolved === 0);
+      setLearningPanelStatus(
+        resolved > 0
+          ? `${options.auto ? "已自动用 AI 归类" : "AI 已归类"} ${resolved} 项，请检查后写入。`
+          : options.auto ? "AI 未能归类剩余字段，可以手动选择模块。" : "AI 没有给出可用的归类，可以手动选择模块。",
+        resolved === 0 && !options.auto
+      );
     } catch (error) {
       setLearningPanelStatus(`AI 归类失败：${formatErrorMessage(error)}`, true);
     } finally {
@@ -8195,6 +8266,48 @@
     element.checked = shouldCheck;
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // ---- Opt-in AI option matching (B). Only low-sensitivity choice fields ever reach the API. ----
+  const AI_VALUE_ALLOWED_LABEL = /学历|学位|学习形式|学习方式|教育类型|培养方式|学校类别|录取批次|政治面貌|婚姻|民族|性别|国籍|血型|健康|证件类型|证件号码类型|工作年限|职称|奖励等级|奖惩层级|奖惩类型|掌握程度|听说|读写|刊物层级|专利类型|外语种类|语种|期望工作城市|面试城市|意向城市|工作城市|工作地|城市|地点|现居住城市|是否|有无|能否|接受|服从|简历来源|信息来源|户籍类型|升学类型|实践方式|学制|年级|在读|全日制|类型|类别|状态|形式|方式|等级|程度|层级/;
+  const AI_VALUE_DENIED_LABEL = /姓名|电话|手机|邮箱|邮件|证件号码$|身份证号|护照|地址|微信|QQ|学号|编号|号码|联系人|证明人|银行|密码|薪资|收入|工资|籍贯|户籍$|生源地|出生|家庭|亲属|紧急/;
+
+  function isAiValueMatchingAllowed(label) {
+    const text = normalizeText(label, 80);
+    return Boolean(text) && !AI_VALUE_DENIED_LABEL.test(text) && AI_VALUE_ALLOWED_LABEL.test(text);
+  }
+
+  async function aiPickOption(field, candidate, value, optionTexts) {
+    if (!aiValueMatchingEnabled || !currentApiUsable) {
+      return null;
+    }
+    const label = candidate?.fieldLabel || field?.inferredLabel || inferFieldLabel(field) || "";
+    const sourceLabel = candidate?.sourceLabel || "";
+    if (!isAiValueMatchingAllowed(label) && !isAiValueMatchingAllowed(sourceLabel)) {
+      return null;
+    }
+    const options = [...new Set((optionTexts || []).map((text) => normalizeText(text, 120)).filter((text) => text && !LEARNING_PLACEHOLDER_VALUE.test(text)))];
+    if (options.length < 2 || options.length > 80 || !normalizeText(value)) {
+      return null;
+    }
+    const cacheKey = `${normalizeMatchKey(label)}|${normalizeText(value, 200)}|${options.join("\u0001")}`;
+    if (aiOptionMatchCache.has(cacheKey)) {
+      return aiOptionMatchCache.get(cacheKey);
+    }
+    let result = null;
+    try {
+      const response = await sendRuntimeMessage({
+        type: "OJAF_MATCH_OPTION",
+        payload: { fieldLabel: label, value, options, context: normalizeText(field?.section || "", 120) }
+      });
+      if (response && Number(response.index) >= 0 && Number(response.confidence || 0) >= 0.6) {
+        result = { option: response.option, confidence: Number(response.confidence), reason: response.reason || "" };
+      }
+    } catch {
+      result = null;
+    }
+    aiOptionMatchCache.set(cacheKey, result);
+    return result;
   }
 
   function setSelectValue(element, value) {
